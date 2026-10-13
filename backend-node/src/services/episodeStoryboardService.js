@@ -301,6 +301,10 @@ function generateVideoPrompt(sb, style, videoRatio) {
     parts.push('场景：' + scene);
   }
   if (sb.title) parts.push('镜头标题：' + sb.title);
+  // 角色造型（#38）：缺失时视频模型无从获知人物外貌，每次生成形象随机
+  if (sb.character_appearances) {
+    parts.push('角色造型：' + String(sb.character_appearances).replace(/\r?\n/g, '；'));
+  }
   // 动作与对白（核心叙事）
   if (sb.action) parts.push('动作：' + sb.action);
   if (sb.dialogue) parts.push('对话：' + sb.dialogue);
@@ -336,6 +340,50 @@ function generateVideoPrompt(sb, style, videoRatio) {
   if (style) parts.push('风格：' + style);
   if (videoRatio) parts.push('=VideoRatio: ' + videoRatio);
   return parts.length ? parts.join('。') : '视频场景';
+}
+
+/**
+ * 从 AI 分镜的 characters 字段提取角色造型文本（#38）。
+ * @param {Array} sbCharacters AI 返回的角色列表，元素为 {id,name} / id / name
+ * @param {Object<string,string>} [appearanceMap] id 或 `name:姓名` → 「姓名」造型 的映射
+ * @returns {string} 每行一个角色的造型文本；无可用信息时返回空串
+ */
+function buildCharacterAppearancesFromAiCharacters(sbCharacters, appearanceMap) {
+  if (!appearanceMap || !Array.isArray(sbCharacters) || sbCharacters.length === 0) return '';
+  const lines = [];
+  const seen = new Set();
+  for (const item of sbCharacters) {
+    let line = null;
+    if (item != null && typeof item === 'object') {
+      line = (item.id != null ? appearanceMap[String(item.id)] : null)
+        || (item.name ? appearanceMap['name:' + String(item.name).trim()] : null);
+    } else if (item != null) {
+      const key = String(item).trim();
+      line = appearanceMap[key] || appearanceMap['name:' + key];
+    }
+    if (line && !seen.has(line)) {
+      seen.add(line);
+      lines.push(line);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 本剧角色造型映射（#38）：id / `name:姓名` → 「姓名」造型。
+ * AI 分镜只带角色 id 与姓名，须在入库前把外貌补进视频提示词，
+ * 否则视频模型无从获知人物形象，每次生成结果随机。
+ */
+function buildDramaCharacterAppearanceMap(characters) {
+  const map = {};
+  for (const c of characters || []) {
+    const appearance = String(c.appearance || '').trim();
+    if (!appearance) continue;
+    const line = c.name ? `「${c.name}」${appearance}` : appearance;
+    map[String(c.id)] = line;
+    if (c.name) map['name:' + String(c.name).trim()] = line;
+  }
+  return map;
 }
 
 /**
@@ -382,7 +430,13 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
   const description = `【镜头类型】${shotType}\n【运镜】${movement}\n【动作】${action}\n【对话】${dialogue}\n【解说】${narration}\n【结果】${result}\n【情绪】${emotion}`;
   const sbWithAngles = { ...sb, angle_h: angleH, angle_v: angleV, angle_s: angleS };
   const imagePrompt = generateImagePrompt(sbWithAngles, style);
-  const videoPrompt = generateVideoPrompt(sbWithAngles, style, videoRatio);
+  // 角色造型注入（#38）：视频提示词须携带角色外貌，否则视频模型每次随机生成人物形象
+  const characterAppearances = buildCharacterAppearancesFromAiCharacters(sb.characters, opts.characterAppearances);
+  const videoPrompt = generateVideoPrompt(
+    characterAppearances ? { ...sbWithAngles, character_appearances: characterAppearances } : sbWithAngles,
+    style,
+    videoRatio
+  );
   const sceneId = sb.scene_id != null ? Number(sb.scene_id) : null;
   const charactersJson = Array.isArray(sb.characters) ? JSON.stringify(sb.characters) : (sb.characters ? JSON.stringify([].concat(sb.characters)) : '[]');
   const propIds = Array.isArray(sb.props) ? sb.props.map(Number).filter(Number.isFinite) : [];
@@ -811,9 +865,17 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
   const streamSavedNums = new Set();
   const streamStyle = (style && String(style).trim()) || cfg?.style?.default_style || '';
   const streamVideoRatio = cfg?.style?.default_video_ratio || '16:9';
+  // 角色造型映射（#38）：流式增量入库同样需要，否则视频提示词丢失人物外貌
+  const streamEpisode = db.prepare('SELECT drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL').get(episodeIdNum);
+  const characterAppearances = streamEpisode?.drama_id
+    ? buildDramaCharacterAppearanceMap(
+        db.prepare('SELECT id, name, appearance FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY name ASC').all(streamEpisode.drama_id)
+      )
+    : {};
   const deriveOpts = {
     universalOmni: !!universalOmni,
     targetClipDuration: targetClipDurationSec != null && Number(targetClipDurationSec) > 0 ? Number(targetClipDurationSec) : null,
+    characterAppearances,
   };
   let streamThrottle = 0;
 
@@ -1283,6 +1345,82 @@ The user enabled narrator voice-over for the whole episode. Every shot object MU
 }
 
 
+/**
+ * 分镜绑定角色的 id 列表（#38）。
+ * 权威顺序与 universalSegmentPromptBundle 一致：storyboards.characters JSON → storyboard_characters 关联表。
+ */
+function loadStoryboardCharacterIds(db, storyboardId) {
+  const sid = Number(storyboardId);
+  if (!Number.isFinite(sid) || sid <= 0) return [];
+  const ids = [];
+  let usedExplicit = false;
+  try {
+    const sbRow = db.prepare('SELECT characters FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(sid);
+    if (sbRow && sbRow.characters != null && String(sbRow.characters).trim() !== '') {
+      const parsed = JSON.parse(sbRow.characters);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (item != null && typeof item === 'object' && item.id != null) ids.push(Number(item.id));
+          else if (typeof item === 'number' || (typeof item === 'string' && /^\d+$/.test(item))) ids.push(Number(item));
+        }
+        usedExplicit = ids.length > 0;
+      }
+    }
+  } catch (_) {}
+  if (!usedExplicit) {
+    try {
+      const links = db.prepare('SELECT character_id FROM storyboard_characters WHERE storyboard_id = ? ORDER BY id ASC').all(sid);
+      for (const link of links) ids.push(Number(link.character_id));
+    } catch (_) {}
+  }
+  return [...new Set(ids.filter((n) => Number.isFinite(n) && n > 0))];
+}
+
+/** 按 id 列表读取角色造型：本剧 characters 优先，缺失时回退角色库 character_libraries */
+function loadCharacterAppearanceRows(db, ids) {
+  const uniq = [...new Set((ids || []).map(Number).filter((n) => Number.isFinite(n) && n > 0))];
+  if (uniq.length === 0) return [];
+  const placeholders = uniq.map(() => '?').join(',');
+  let rows = [];
+  try {
+    rows = db.prepare(
+      `SELECT id, name, appearance FROM characters WHERE id IN (${placeholders}) AND deleted_at IS NULL`
+    ).all(...uniq);
+  } catch (_) {
+    rows = [];
+  }
+  if (rows.length === 0) {
+    try {
+      rows = db.prepare(
+        `SELECT id, name, description AS appearance FROM character_libraries WHERE id IN (${placeholders}) AND deleted_at IS NULL`
+      ).all(...uniq);
+    } catch (_) {
+      rows = [];
+    }
+  }
+  return rows;
+}
+
+/**
+ * 分镜角色造型文本（#38）：每行一个角色，无造型信息的角色跳过。
+ * 供视频提示词注入，修复「主角已指定造型但每次生成视频形象随机」。
+ */
+function buildCharacterAppearanceText(db, storyboardId) {
+  const rows = loadCharacterAppearanceRows(db, loadStoryboardCharacterIds(db, storyboardId));
+  const lines = [];
+  const seen = new Set();
+  for (const r of rows) {
+    const appearance = String(r.appearance || '').trim();
+    if (!appearance) continue;
+    const name = String(r.name || '').trim();
+    const key = name || `#${r.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lines.push(name ? `「${name}」${appearance}` : appearance);
+  }
+  return lines.join('\n');
+}
+
 function rebuildVideoPromptForStoryboard(db, log, storyboardId) {
   const sbId = Number(storyboardId);
   if (!Number.isFinite(sbId) || sbId <= 0) return null;
@@ -1313,32 +1451,11 @@ function rebuildVideoPromptForStoryboard(db, log, storyboardId) {
 
   const videoRatio = dramaAspectRatio || cfg?.style?.default_video_ratio || '16:9';
 
-  let charNames = [];
-  if (row.characters) {
-    try {
-      const arr = typeof row.characters === 'string' ? JSON.parse(row.characters) : row.characters;
-      if (Array.isArray(arr)) {
-        charNames = arr
-          .map((c) => {
-            if (typeof c === 'string') return c;
-            if (c && typeof c === 'object') return c.name;
-            return null;
-          })
-          .filter(Boolean);
-      }
-    } catch (_) {}
-  }
-
-  const charRows = loadCharactersForStoryboardPrompt(db, sbId, charNames);
-  const characterAppearances = buildCharacterAppearanceText(db, sbId, charNames);
-  const characterVoiceMap = buildVoiceAnchorMap(charRows);
-  const characterVoiceAnchors = buildCharacterVoiceAnchors(db, sbId, charNames);
+  const characterAppearances = buildCharacterAppearanceText(db, sbId);
 
   const sbForPrompt = {
     ...row,
     character_appearances: characterAppearances,
-    character_voice_map: characterVoiceMap,
-    character_voice_anchors: characterVoiceAnchors,
   };
 
   const videoPrompt = generateVideoPrompt(sbForPrompt, finalStyle, videoRatio);
@@ -1349,7 +1466,7 @@ function rebuildVideoPromptForStoryboard(db, log, storyboardId) {
     log.info('[分镜] 已按最新规则重建 video_prompt', {
       id: sbId,
       len: videoPrompt.length,
-      has_voice_anchors: !!characterVoiceAnchors,
+      has_character_appearances: !!characterAppearances,
     });
   }
 
@@ -1568,6 +1685,10 @@ module.exports = {
   generateStoryboard,
   /** 与分镜入库时一致的「视频提示词」拼装（供经典模式润色等复用） */
   composeStoryboardVideoPrompt: generateVideoPrompt,
+  /** AI 分镜对象的入库字段计算（含角色造型注入，供测试与复用） */
+  deriveStoryboardFieldsFromAi,
+  /** 批量入库（与后台任务同一 deriveOpts 通道，供测试与复用） */
+  saveStoryboards,
   rebuildVideoPromptForStoryboard,
   splitStoryboardByAudio,
 };
