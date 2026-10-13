@@ -11,8 +11,8 @@ const angleService = require('./angleService');
 /**
  * 分镜专用 generateText 包装：
  * 1. 默认携带 max_tokens:16384，让模型输出更长，减少截断续写次数。
- * 2. 若 API 立即返回参数错误（HTTP 4xx，且错误体提到 max_tokens/length/token），
- *    自动降级为不传 max_tokens 重试一次。
+ * 2. 若 API 因 max_tokens 超上限报参数错误，由 aiClient 统一降级重试
+ *    （有上限值则按上限重试，否则去掉 max_tokens），此处的包装不再需要自己处理。
  * 3. 所有尝试均记录日志。
  */
 const DEFAULT_STORYBOARD_MAX_TOKENS = 16384;
@@ -47,53 +47,18 @@ function dedupeStoryboardRowsByNumber(rows) {
   );
 }
 
-function isMaxTokensParamError(errMsg) {
-  const m = (errMsg || '').toLowerCase();
-  return (
-    m.includes('max_tokens') ||
-    m.includes('max_completion_tokens') ||
-    m.includes('maximum_context_length') ||
-    m.includes('context_length_exceeded') ||
-    m.includes('maximum length') ||
-    m.includes('token limit') ||
-    (m.includes('http 4') && (m.includes('token') || m.includes('length') || m.includes('parameter')))
-  );
-}
-
 async function generateTextForStoryboard(db, log, userPrompt, systemPrompt, options = {}) {
   const { model, streamCallback, temperature = 0.7 } = options;
 
-  // 第一次尝试：带 max_tokens:16384
-  log.info('Storyboard generateText attempt 1', { model: model || '(default)', max_tokens: DEFAULT_STORYBOARD_MAX_TOKENS });
-  try {
-    const text = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
-      scene_key: 'storyboard_extraction',
-      model: model || undefined,
-      temperature,
-      max_tokens: DEFAULT_STORYBOARD_MAX_TOKENS,
-      streamCallback,
-    });
-    return text;
-  } catch (e) {
-    if (isMaxTokensParamError(e.message)) {
-      log.warn('Storyboard generateText: max_tokens rejected by model, retrying without it', {
-        model: model || '(default)',
-        error: e.message.slice(0, 200),
-      });
-      // 第二次尝试：不传 max_tokens，让模型用自己默认值
-      log.info('Storyboard generateText attempt 2 (no max_tokens)', { model: model || '(default)' });
-      const text = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
-        scene_key: 'storyboard_extraction',
-        model: model || undefined,
-        temperature,
-        streamCallback,
-      });
-      log.info('Storyboard generateText attempt 2 succeeded');
-      return text;
-    }
-    // 其他错误直接抛出
-    throw e;
-  }
+  // max_tokens 超厂商上限时的降级重试由 aiClient.generateText 内部统一处理
+  log.info('Storyboard generateText', { model: model || '(default)', max_tokens: DEFAULT_STORYBOARD_MAX_TOKENS });
+  return aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
+    scene_key: 'storyboard_extraction',
+    model: model || undefined,
+    temperature,
+    max_tokens: DEFAULT_STORYBOARD_MAX_TOKENS,
+    streamCallback,
+  });
 }
 
 function rowToScene(r) {

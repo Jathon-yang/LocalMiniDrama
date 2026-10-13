@@ -260,6 +260,83 @@ function getConfigFromModelMap(db, sceneKey) {
   }
 }
 
+/**
+ * 判断错误是否为 max_tokens / max_completion_tokens 超限类参数错误。
+ * 火山方舟等厂商会在 HTTP 4xx 错误体里给出实际上限（expected a value <= 12288）。
+ */
+function isMaxTokensParamError(errMsg) {
+  const m = String(errMsg || '').toLowerCase();
+  return (
+    m.includes('max_tokens') ||
+    m.includes('max_completion_tokens') ||
+    m.includes('maximum_context_length') ||
+    m.includes('context_length_exceeded') ||
+    m.includes('maximum length') ||
+    m.includes('token limit') ||
+    (m.includes('http 4') && (m.includes('token') || m.includes('length') || m.includes('parameter')))
+  );
+}
+
+/**
+ * 从厂商错误信息里解析 max_tokens 上限：
+ * - "expected a value <= 12288" / "less than or equal to 4096" → 12288 / 4096
+ * - "maximum is 12288" / "maximum of 12288" → 12288
+ * 识别不出返回 null（由调用方退化为去掉 max_tokens 重试）。
+ */
+function parseMaxTokensLimitFromError(errMsg) {
+  const m = String(errMsg || '');
+  const le = m.match(/<=\s*(\d{3,7})/);
+  if (le) return Number(le[1]);
+  const words = m.match(/(?:less\s+than\s+or\s+equal\s+to|not\s+to\s+exceed|no\s+more\s+than)\s*:?\s*(\d{3,7})/i);
+  if (words) return Number(words[1]);
+  const maximum = m.match(/maximum(?:\s+\w+){0,3}\s+(?:is\s+)?(\d{3,7})/i);
+  return maximum ? Number(maximum[1]) : null;
+}
+
+/** 把 body 里的 max_tokens / max_completion_tokens 夹到厂商上限；无需调整时返回 null */
+function clampMaxTokensInBody(body, cap) {
+  if (!body || !(Number(cap) > 0)) return null;
+  for (const key of ['max_tokens', 'max_completion_tokens']) {
+    const v = Number(body[key]);
+    if (Number.isFinite(v) && v > Number(cap)) {
+      return { ...body, [key]: Number(cap) };
+    }
+  }
+  return null;
+}
+
+/** 去掉 body 里的 max_tokens / max_completion_tokens，让模型用默认上限 */
+function stripMaxTokensFromBody(body) {
+  if (!body) return body;
+  const next = { ...body };
+  delete next.max_tokens;
+  delete next.max_completion_tokens;
+  return next;
+}
+
+/**
+ * max_tokens 被厂商拒绝时的重试（仅一次）：
+ * 错误体给出上限则按上限重试（保留长输出能力），否则去掉该参数重试。
+ */
+async function retryTextAfterMaxTokensError({ log, tag, model, error, body, send }) {
+  const cap = parseMaxTokensLimitFromError(error && error.message);
+  const capped = clampMaxTokensInBody(body, cap);
+  if (capped) {
+    log.warn(`${tag}: max_tokens 超出厂商上限，按上限重试`, {
+      model,
+      requested_max_tokens: body.max_tokens ?? body.max_completion_tokens,
+      capped_to: cap,
+      original_error: String((error && error.message) || '').slice(0, 200),
+    });
+    return send(capped);
+  }
+  log.warn(`${tag}: max_tokens 被厂商拒绝，去掉该参数重试`, {
+    model,
+    original_error: String((error && error.message) || '').slice(0, 200),
+  });
+  return send(stripMaxTokensFromBody(body));
+}
+
 async function generateText(db, log, serviceType, userPrompt, systemPrompt, options = {}) {
   const { model: preferredModel, temperature = 0.7, json_mode = false, min_max_tokens = null, streamCallback = null, scene_key = null } = options;
 
@@ -343,7 +420,7 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
   body = applyDeepSeekChatOptions(config, body);
   const startMs = Date.now();
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
-  const res = await postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 60000, (receivedLen, event, accumulated) => {
+  const onProgress = (receivedLen, event, accumulated) => {
     if (event === 'first_token') {
       log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
     } else if (receivedLen > 0 && receivedLen % 500 < 20) {
@@ -352,7 +429,17 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     }
     // 调用者提供的流式回调（如分镜增量解析），传入当前已积累的完整文本
     if (streamCallback && accumulated) streamCallback(accumulated);
-  });
+  };
+  const send = (b) =>
+    postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, b, 60000, onProgress);
+  let res;
+  try {
+    res = await send(body);
+  } catch (e) {
+    // max_tokens 超厂商上限（如火山方舟 12288）：按上限或去掉该参数重试一次
+    if (!isMaxTokensParamError(e.message)) throw e;
+    res = await retryTextAfterMaxTokensError({ log, tag: 'AI generateText', model, error: e, body, send });
+  }
   // 流式模式下 res.body 已是拼接好的完整文本内容（非 JSON）
   const content = res.body;
   const elapsedMs = Date.now() - startMs;
@@ -447,21 +534,25 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     stream: true,
   });
   let lastLen = 0;
-  const res = await postJSONStream(
-    url,
-    { Authorization: 'Bearer ' + (config.api_key || '') },
-    body,
-    silenceMs,
-    (receivedLen, event, accumulated) => {
-      if (event === 'first_token') {
-        log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
-      }
-      if (!accumulated || accumulated.length <= lastLen) return;
-      const delta = accumulated.slice(lastLen);
-      lastLen = accumulated.length;
-      if (onDelta && delta) onDelta(delta);
+  const onProgress = (receivedLen, event, accumulated) => {
+    if (event === 'first_token') {
+      log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
     }
-  );
+    if (!accumulated || accumulated.length <= lastLen) return;
+    const delta = accumulated.slice(lastLen);
+    lastLen = accumulated.length;
+    if (onDelta && delta) onDelta(delta);
+  };
+  const send = (b) =>
+    postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, b, silenceMs, onProgress);
+  let res;
+  try {
+    res = await send(body);
+  } catch (e) {
+    // max_tokens 超厂商上限（如火山方舟 12288）：按上限或去掉该参数重试一次
+    if (!isMaxTokensParamError(e.message)) throw e;
+    res = await retryTextAfterMaxTokensError({ log, tag: 'AI streamGenerateText', model, error: e, body, send });
+  }
   const content = res.body;
   if (!content) {
     throw new Error('AI 返回内容为空');
@@ -714,4 +805,8 @@ module.exports = {
   EXTRACT_PROMPTS,
   isRefusalResponse,
   postJSONWithTimeout,
+  isMaxTokensParamError,
+  parseMaxTokensLimitFromError,
+  clampMaxTokensInBody,
+  stripMaxTokensFromBody,
 };
