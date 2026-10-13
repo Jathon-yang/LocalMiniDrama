@@ -563,6 +563,18 @@ function isSeedance2FamilyModel(modelName) {
 }
 
 /**
+ * 经典「火山引擎」协议下是否应改走「全能/多图参考」实现：
+ * 方舟 Seedance 2.x（含 doubao-seedance-2.5-260628 等新版本）本身支持多图参考，
+ * 但配置常选标准 volcengine 协议；此时不能按经典首尾帧逻辑把多出的参考图丢掉。
+ */
+function shouldUseVolcOmniMultiReference(protocol, modelName, referenceUrls) {
+  if (String(protocol || '').toLowerCase() !== 'volcengine') return false;
+  if (!isSeedance2FamilyModel(modelName)) return false;
+  const refs = Array.isArray(referenceUrls) ? referenceUrls.filter(Boolean) : [];
+  return refs.length > 0;
+}
+
+/**
  * 火山 Seedance 系列：按模型版本归一化时长（秒）。
  * - 2.x：4–15
  * - 1.5 Pro/Lite：5–12（官方文档）
@@ -4201,6 +4213,31 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  // 标准「火山引擎」协议 + Seedance 2.x 家族模型 + 参考图：按方舟全能协议发送，
+  // 否则多图参考会被经典首尾帧链路丢弃（issue #49）
+  if (shouldUseVolcOmniMultiReference(protocol, model, opts.reference_urls)) {
+    log.info('[VolcOmni] Seedance 2.x 多图参考：经典协议改走全能实现', {
+      video_gen_id: opts.video_gen_id,
+      model,
+    });
+    return callVolcengineOmniVideoApi(config, log, {
+      prompt,
+      model,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution: opts.resolution,
+      seed: opts.seed,
+      camera_fixed: opts.camera_fixed,
+      watermark: opts.watermark,
+      image_url: opts.image_url,
+      reference_urls: opts.reference_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+      video_gen_id: opts.video_gen_id,
+      voice_reference_url: opts.voice_reference_url,
+    });
+  }
+
   // Veo3 protocol (api_protocol = 'veo3')
   if (protocol === 'veo3') {
     return callVeo3VideoApi(config, log, {
@@ -4861,6 +4898,7 @@ module.exports = {
   normalizeAgnesVideo25AspectRatio,
   formatVideoPostBodyForLog,
   isSeedance2FamilyModel,
+  shouldUseVolcOmniMultiReference,
   normalizeVolcengineDuration,
   isMinimaxH3Model,
   getMinimaxApiRoot,
