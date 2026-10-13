@@ -125,10 +125,48 @@ async function resolveVideoToLocalPath(videoUrl, baseUrl, storageRoot, tempDir, 
   }
 }
 
-/** 使用 ffmpeg concat 合并多个视频文件 */
-function runFfmpegConcat(localPaths, outputPath, log) {
+/**
+ * ffmpeg concat 参数构造：
+ * - 默认 `-c copy` 流拷贝：快且无损，但要求各片段编码参数一致；
+ * - transcode：重编码兜底。AI 分镜片段常出现编码/分辨率/采样率不一致，
+ *   流拷贝 concat 会直接失败，整集退化成只有首段（issue #21 / #14）。
+ */
+function buildConcatArgs(listFile, outputPath, transcode = false) {
+  if (!transcode) {
+    return ['-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-y', outputPath];
+  }
+  return [
+    '-f', 'concat', '-safe', '0', '-i', listFile,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-ar', '44100', '-ac', '2',
+    '-movflags', '+faststart',
+    '-y', outputPath,
+  ];
+}
+
+function runFfmpegConcatOnce(listFile, outputPath, transcode, log) {
   const ffmpegBin = getFfmpegPath();
-  const isWin = process.platform === 'win32';
+  const { spawnSync } = require('child_process');
+  const result = spawnSync(ffmpegBin, buildConcatArgs(listFile, outputPath, transcode), {
+    encoding: 'utf8',
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (result.error) {
+    log.warn('Video merge: ffmpeg spawn error', { error: result.error.message, transcode: !!transcode });
+    return false;
+  }
+  if (result.status !== 0) {
+    log.warn('Video merge: ffmpeg failed', {
+      transcode: !!transcode,
+      stderr: result.stderr?.slice(-500),
+    });
+    return false;
+  }
+  return true;
+}
+
+/** 使用 ffmpeg concat 合并多个视频文件：先流拷贝，失败再重编码兜底 */
+function runFfmpegConcat(localPaths, outputPath, log) {
   const listFile = path.join(path.dirname(outputPath), `concat_list_${Date.now()}.txt`);
   try {
     const lines = localPaths.map((p) => {
@@ -136,25 +174,11 @@ function runFfmpegConcat(localPaths, outputPath, log) {
       return `file '${normalized.replace(/'/g, "'\\''")}'`;
     });
     fs.writeFileSync(listFile, lines.join('\n'), 'utf8');
-    const { spawnSync } = require('child_process');
-    const args = [
-      '-f', 'concat',
-      '-safe', '0',
-      '-i', listFile,
-      '-c', 'copy',
-      '-y',
-      outputPath,
-    ];
-    const result = spawnSync(ffmpegBin, args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
-    if (result.error) {
-      log.warn('Video merge: ffmpeg spawn error', { error: result.error.message });
-      return false;
-    }
-    if (result.status !== 0) {
-      log.warn('Video merge: ffmpeg failed', { stderr: result.stderr?.slice(-500) });
-      return false;
-    }
-    return true;
+    if (runFfmpegConcatOnce(listFile, outputPath, false, log)) return true;
+    log.warn('Video merge: stream copy concat failed, retrying with re-encode', {
+      clip_count: localPaths.length,
+    });
+    return runFfmpegConcatOnce(listFile, outputPath, true, log);
   } finally {
     try { if (fs.existsSync(listFile)) fs.unlinkSync(listFile); } catch (_) {}
   }
@@ -293,4 +317,6 @@ module.exports = {
   create,
   deleteById,
   processVideoMerge,
+  buildConcatArgs,
+  runFfmpegConcat,
 };
