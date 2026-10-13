@@ -18,12 +18,21 @@ function routes(db, log, cfg) {
     generatePrompt: async (req, res) => {
       try {
         const body = req.body || {};
-        const out = await sceneService.generateScenePromptOnly(
-          db, log, cfg, req.params.scene_id, body.model || undefined, body.style || undefined
-        );
+        // mode: 'single' 生成单图提示词（polished_prompt_single），默认四宫格（polished_prompt）
+        const single = String(body.mode || '').trim().toLowerCase() === 'single';
+        const out = single
+          ? await sceneService.generateSceneSinglePromptOnly(
+              db, log, cfg, req.params.scene_id, body.model || undefined, body.style || undefined
+            )
+          : await sceneService.generateScenePromptOnly(
+              db, log, cfg, req.params.scene_id, body.model || undefined, body.style || undefined
+            );
         if (!out.ok) {
           if (out.error === 'scene not found') return response.notFound(res, '场景不存在');
           return response.badRequest(res, out.error);
+        }
+        if (single) {
+          return response.success(res, { message: '单图提示词已生成', polished_prompt_single: out.polished_prompt_single });
         }
         response.success(res, { message: '提示词已生成', polished_prompt: out.polished_prompt });
       } catch (err) {
@@ -91,16 +100,23 @@ function routes(db, log, cfg) {
         const body = req.body || {};
         const sceneId = body.scene_id != null ? Number(body.scene_id) : null;
         if (sceneId == null) return response.badRequest(res, '缺少 scene_id');
-        const out = await sceneService.generateSceneFourViewImage(
-          db, log, cfg, sceneId, body.model || undefined, body.style || undefined
-        );
+        const modelName = body.model || undefined;
+        const style = body.style || undefined;
+        // use_quad_grid：前端场景区复选框显式传入。勾选走四视图，取消勾选走单图；
+        // 未传该字段的旧调用方（画布、旧详情页）保持四视图行为不变
+        const useQuadGrid = body.use_quad_grid == null
+          ? true
+          : (body.use_quad_grid === true || body.use_quad_grid === 1 || body.use_quad_grid === 'true');
+        const out = useQuadGrid
+          ? await sceneService.generateSceneFourViewImage(db, log, cfg, sceneId, modelName, style)
+          : await sceneService.generateSceneSingleImage(db, log, cfg, sceneId, modelName, style);
         if (!out.ok) {
           if (out.error === 'scene not found') return response.notFound(res, '场景不存在');
           if (out.error === 'unauthorized') return response.notFound(res, '剧集不存在或无权限');
           return response.badRequest(res, out.error);
         }
         response.success(res, {
-          message: '场景四视图生成任务已提交',
+          message: useQuadGrid ? '场景四视图生成任务已提交' : '场景单图生成任务已提交',
           image_generation: out.image_generation,
         });
       } catch (err) {
