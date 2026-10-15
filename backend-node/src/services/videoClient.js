@@ -2981,6 +2981,10 @@ async function callSoraVideoApi(config, log, opts) {
       image_count: images.length,
       video_gen_id,
     });
+    log.info('[Sora][omni-multi] 请求体 JSON', {
+      video_gen_id,
+      body_json: JSON.stringify(body, null, 2),
+    });
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -4092,7 +4096,7 @@ async function callVideoApi(db, log, opts) {
     model,
     endpoint: config.endpoint || '(auto)',
   });
-
+  
   if (protocol === 'jimeng_ai_api') {
     return callJimengAiApiVideo(config, log, {
       prompt,

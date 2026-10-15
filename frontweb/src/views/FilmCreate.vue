@@ -185,6 +185,14 @@
         style="display: none"
         @change="onSbImageFileChange"
       />
+      <!-- 分镜手动上传视频替换用，单例放在外层避免 v-for 导致 ref 为数组 -->
+      <input
+        ref="sbVideoFileInput"
+        type="file"
+        accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska,video/webm,video/x-flv,video/3gpp,video/x-m4v"
+        style="display: none"
+        @change="onSbVideoFileChange"
+      />
       <!-- 剧本工作台：单卡片 + 选项卡（创作 / 选择） -->
       <section class="section card script-workbench-unified">
         <el-tabs v-model="scriptWorkbenchMode" class="script-workbench-tabs">
@@ -479,7 +487,7 @@
                     <div class="asset-btns">
                       <el-button size="small" @click="editCharacter(char)">编辑</el-button>
                       <el-button size="small" :loading="addingCharToLibraryId === char.id" :disabled="!hasAssetImage(char)" @click="onAddCharacterToLibrary(char)">
-                        加入本剧库
+                        加入本剧库33
                       </el-button>
                       <el-button size="small" :loading="addingCharToMaterialId === char.id" :disabled="!hasAssetImage(char)" @click="onAddCharacterToMaterialLibrary(char)">
                         加入素材库
@@ -1529,7 +1537,10 @@
                 </div>
               </div>
               <div v-if="getSbVideo(sb.id)" class="sb-video-actions">
-                <el-button size="small" :loading="isSbVideoGenerating(sb.id)" :disabled="!sbCanSubmitVideo(sb) || isSbVideoGenerating(sb.id)" @click="onGenerateSbVideo(sb)">重新生成</el-button>
+                <el-button size="small" :loading="isSbVideoGenerating(sb.id)" :disabled="!sbCanSubmitVideo(sb) || isSbVideoGenerating(sb.id)" @click="onGenerateSbVideo(sb)">1重新生成</el-button>
+                <el-tooltip content="手动上传本地视频替换当前分镜视频" placement="top">
+                  <el-button size="small" :loading="uploadingSbVideoId === sb.id" :disabled="isSbVideoGenerating(sb.id)" @click="onUploadSbVideoClick(sb)">上传替换</el-button>
+                </el-tooltip>
                 <el-tooltip v-if="getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
                   <el-button size="small" :loading="linkingTailFrameIds.has(sb.id)" @click="onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
                 </el-tooltip>
@@ -3274,6 +3285,10 @@ const editingFramePromptRegenerating = ref(false)
 const uploadingSbImageId = ref(null)
 const sbImageFileInput = ref(null)
 const sbImageUploadForId = ref(null)
+// 分镜手动上传视频替换
+const uploadingSbVideoId = ref(null)
+const sbVideoFileInput = ref(null)
+const sbVideoUploadForId = ref(null)
 // 角色/道具/场景 上传图片
 const resourceImageFileInput = ref(null)
 const resourceUploadType = ref(null) // 'character' | 'prop' | 'scene'
@@ -4475,6 +4490,54 @@ function onSbImageFileChange(ev) {
   const slot = sbImageUploadSlotById.value[sid] || 'first'
   doUploadSbImage(sid, file, slot).finally(() => {
     sbImageUploadForId.value = null
+    ev.target.value = ''
+  })
+}
+
+// ── 分镜手动上传视频替换 ──────────────────────────────────────────────
+function onUploadSbVideoClick(sb) {
+  if (!sb?.id) return
+  sbVideoUploadForId.value = sb.id
+  uploadingSbVideoId.value = sb.id
+  if (sbVideoFileInput.value) {
+    sbVideoFileInput.value.value = ''
+    sbVideoFileInput.value.click()
+  }
+}
+
+async function doUploadSbVideo(sbId, file) {
+  if (!file || !sbId || !dramaId.value) return
+  try {
+    const uploaded = await videosAPI.uploadManual(file, {
+      storyboardId: sbId,
+      dramaId: dramaId.value,
+      prompt: '手动上传视频',
+    })
+    ElMessage.success('视频上传成功，已替换当前分镜视频')
+    // 清除前端选中，让合成时自动取最新视频
+    if (sbSelectedVideoId.value[sbId] != null) {
+      const next = { ...sbSelectedVideoId.value }
+      delete next[sbId]
+      sbSelectedVideoId.value = next
+    }
+    await loadSingleStoryboardMedia(sbId)
+    restoreSelectionsFromBackend()
+  } catch (e) {
+    ElMessage.error(e.message || '上传失败')
+  } finally {
+    uploadingSbVideoId.value = null
+  }
+}
+
+function onSbVideoFileChange(ev) {
+  const file = ev.target?.files?.[0]
+  const sid = sbVideoUploadForId.value
+  if (!file || !sid) {
+    ev.target.value = ''
+    return
+  }
+  doUploadSbVideo(sid, file).finally(() => {
+    sbVideoUploadForId.value = null
     ev.target.value = ''
   })
 }

@@ -136,6 +136,7 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
   }
 }
 
+
 /** 与图生 aspectRatioToSize 对齐的归一化分辨率（偶数像素，便于 H.264） */
 function targetVideoPixelsForAspect(aspectRatio) {
   const r = String(aspectRatio || '16:9').trim();

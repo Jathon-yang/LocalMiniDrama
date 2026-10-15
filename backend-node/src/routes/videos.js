@@ -1,6 +1,9 @@
+const path = require('path');
 const response = require('../response');
 const videoService = require('../services/videoService');
 const taskService = require('../services/taskService');
+const uploadService = require('../services/uploadService');
+const storageLayout = require('../services/storageLayout');
 const { normalizeAspectRatioForApi } = require('../services/videoClient');
 
 function routes(db, log) {
@@ -117,6 +120,65 @@ function routes(db, log) {
       } catch (err) {
         log.error('videos fromImage', { error: err.message });
         response.internalError(res, err.message);
+      }
+    },
+    /** 手动上传视频替换分镜视频：保存文件 → 写入 video_generations(completed) → 回写 storyboard.video_url/local_path */
+    uploadManual: (req, res) => {
+      try {
+        if (!req.file || !req.file.buffer) {
+          return response.badRequest(res, '请选择视频文件');
+        }
+        const storyboardId = req.body?.storyboard_id != null ? Number(req.body.storyboard_id) : 0;
+        if (!storyboardId || storyboardId <= 0) {
+          return response.badRequest(res, 'storyboard_id 必填');
+        }
+        const sbRow = db.prepare('SELECT id, episode_id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(storyboardId);
+        if (!sbRow) {
+          return response.notFound(res, '分镜不存在');
+        }
+        // storyboards 没有 drama_id，需通过 episode 关联获取
+        let dramaId = 0;
+        try {
+          const ep = db.prepare('SELECT drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL').get(sbRow.episode_id);
+          dramaId = ep?.drama_id || 0;
+        } catch (_) {}
+        const loadConfig = require('../config').loadConfig;
+        const cfg = loadConfig();
+        const rawStorage = cfg?.storage?.local_path || './data/storage';
+        const storagePath = path.isAbsolute(rawStorage) ? rawStorage : path.join(process.cwd(), rawStorage);
+        const baseUrl = (cfg?.storage?.base_url || '').replace(/\/$/, '');
+        const projectSubdir = dramaId ? storageLayout.getProjectStorageSubdir(db, dramaId) : null;
+        const result = uploadService.uploadFile(
+          storagePath,
+          baseUrl,
+          log,
+          req.file.buffer,
+          req.file.originalname || 'video.mp4',
+          req.file.mimetype,
+          'videos',
+          projectSubdir
+        );
+        const now = new Date().toISOString();
+        const provider = 'manual';
+        const prompt = req.body?.prompt || '手动上传视频';
+        // 写入一条已完成的 video_generations 记录，便于前端「历史视频」切换
+        db.prepare(
+          `INSERT INTO video_generations
+            (drama_id, storyboard_id, provider, prompt, video_url, local_path, status, completed_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`
+        ).run(dramaId, storyboardId, provider, prompt, result.url || null, result.local_path, now, now, now);
+        const videoGenId = db.prepare('SELECT last_insert_rowid() as id').get().id;
+        // 回写分镜主视频地址，合成视频时直接采用
+        try {
+          db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
+            .run(result.url || null, result.local_path, now, storyboardId);
+        } catch (_) {}
+        const item = videoService.getById(db, videoGenId);
+        log.info('Manual video uploaded for storyboard', { storyboard_id: storyboardId, video_gen_id: videoGenId, local_path: result.local_path });
+        response.created(res, item || { id: videoGenId, status: 'completed', video_url: result.url, local_path: result.local_path });
+      } catch (err) {
+        log.error('videos uploadManual', { error: err.message });
+        response.internalError(res, err.message || '上传失败');
       }
     },
     episodeBatch: (req, res) => {

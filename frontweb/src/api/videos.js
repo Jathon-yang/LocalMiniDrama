@@ -12,4 +12,19 @@ export const videosAPI = {
   resumePoll(id) {
     return request.post(`/videos/${id}/resume-poll`)
   },
+  /**
+   * 手动上传视频替换分镜视频。需传 File 对象和 storyboard_id。
+   * @param {File} file
+   * @param {{ storyboardId: number|string, dramaId?: number|string, prompt?: string }} opts
+   */
+  uploadManual(file, opts = {}) {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('storyboard_id', String(opts.storyboardId))
+    if (opts.dramaId != null && opts.dramaId !== '') form.append('drama_id', String(opts.dramaId))
+    if (opts.prompt) form.append('prompt', String(opts.prompt))
+    return request.post('/videos/upload-manual', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
 }
