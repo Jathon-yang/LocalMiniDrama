@@ -91,6 +91,7 @@ function createAgentTestDb() {
       base_url TEXT,
       api_key TEXT,
       model TEXT,
+      default_model TEXT,
       priority INTEGER DEFAULT 0,
       is_default INTEGER DEFAULT 0,
       is_active INTEGER DEFAULT 1,

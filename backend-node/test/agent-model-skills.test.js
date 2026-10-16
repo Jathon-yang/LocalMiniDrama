@@ -8,10 +8,11 @@ const { createAgentTestDb } = require('./helpers/agentTestDb');
 function insertConfig(db, row) {
   db.prepare(
     `INSERT INTO ai_service_configs
-      (id, service_type, base_url, api_key, model, priority, is_default, is_active, deleted_at, endpoint)
-     VALUES (@id, @service_type, @base_url, @api_key, @model, @priority, @is_default, @is_active, @deleted_at, @endpoint)`
+      (id, service_type, base_url, api_key, model, default_model, priority, is_default, is_active, deleted_at, endpoint)
+     VALUES (@id, @service_type, @base_url, @api_key, @model, @default_model, @priority, @is_default, @is_active, @deleted_at, @endpoint)`
   ).run({
     deleted_at: null,
+    default_model: null,
     endpoint: '/chat/completions',
     is_active: 1,
     is_default: 1,
@@ -53,6 +54,18 @@ describe('agent model and skills', () => {
       id: 1, service_type: 'text', base_url: '  ', api_key: 'sk', model: 'qwen', priority: 1,
     });
     assert.equal(resolveTextModel(empty).error, '文本模型的 base_url 或模型名为空');
+
+    const listed = createAgentTestDb();
+    insertConfig(listed, {
+      id: 1,
+      service_type: 'text',
+      base_url: 'https://ark.cn-beijing.volces.com/api/v3',
+      api_key: 'sk-ark',
+      model: '["deepseek-v4-flash-ga-260731","doubao-seed-2-1-lite-260915"]',
+      default_model: 'doubao-seed-2-1-lite-260915',
+      priority: 1,
+    });
+    assert.equal(resolveTextModel(listed).model.id, 'custom/doubao-seed-2-1-lite-260915');
   });
 
   it('skips invalid skill directories and keeps valid ones', async () => {

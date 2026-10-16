@@ -4,7 +4,7 @@
 
 **A locally-running AI short drama & comic generator — download and run, no cloud required, fully open source**
 
-[![version](https://img.shields.io/badge/version-1.2.8-blue?style=flat-square)](../../releases)
+[![version](https://img.shields.io/badge/version-1.2.9-blue?style=flat-square)](../../releases)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](../LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](#)
 [![stack](https://img.shields.io/badge/Vue3%20%2B%20Node.js%20%2B%20Electron-informational?style=flat-square)](#)
@@ -185,7 +185,12 @@ LocalMiniDrama/
 
 Full version history → **[CHANGELOG](changelog.md)**
 
-**Latest v1.2.8 highlights:**
+**Latest v1.2.9 highlights:**
+- 🆕 **In-app assistant** — chat on the drama, production, and canvas pages can edit the current drama (script, characters, scenes, storyboards, images); deletes ask for confirmation
+- 🔧 **Text model** — when a text config lists several models, the assistant uses the default one instead of sending the whole list as the model name
+- 🔧 **Desktop runtime** — Electron 44, so the assistant can run inside the installer
+
+**v1.2.8 highlights:**
 - 🆕 **Agnes AI** — one-click setup for text (`agnes-2.0-flash`), image (`agnes-image-2.1-flash`), and video (`agnes-video-v2.0`) with a single API key
 - 🆕 **Canvas mode enhancements** — script node on canvas, context menu, floating toolbar, in-canvas create/delete, batch episode generation
 - 🆕 **ModelArk private asset library** — configure BytePlus / Volcengine Ark asset groups for Seedance 2.0 character certification (AK/SK or Bearer auth)

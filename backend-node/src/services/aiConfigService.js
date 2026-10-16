@@ -10,21 +10,26 @@ function normalizeApiKeyForService(serviceType, apiKey) {
   return apiKey;
 }
 const { applyDeepSeekConnectivityOptions } = require('./deepseekConfig');
+const { flattenModelIds, pickModelId, remapArkModelId, remapArkModelList, isOfficialArkBase } = require('./modelId');
 function modelToDb(model) {
   if (model == null) return null;
-  if (Array.isArray(model)) return JSON.stringify(model);
-  if (typeof model === 'string') return JSON.stringify([model]);
-  return JSON.stringify([]);
+  const ids = flattenModelIds(model);
+  return JSON.stringify(ids);
 }
 
 function modelFromDb(val) {
-  if (val == null || val === '') return [];
-  try {
-    const arr = JSON.parse(val);
-    return Array.isArray(arr) ? arr : [String(arr)];
-  } catch {
-    return [String(val)];
-  }
+  return flattenModelIds(val);
+}
+
+function storedModelValue(baseUrl, model) {
+  if (model == null) return null;
+  return modelToDb(remapArkModelList(baseUrl, model));
+}
+
+function storedDefaultModel(baseUrl, defaultModel) {
+  if (defaultModel == null) return null;
+  const id = remapArkModelId(baseUrl, pickModelId(defaultModel));
+  return id || null;
 }
 
 /** 每种服务类型只保留一个默认：若有多个 is_default=1，只保留优先级最高（同优先级取 id 最小）的那条 */
@@ -69,7 +74,7 @@ function getConfig(db, id) {
 
 function createConfig(db, log, req) {
   const now = new Date().toISOString();
-  const model = modelToDb(req.model);
+  const model = storedModelValue(req.base_url, req.model);
   let endpoint = req.endpoint || '';
   let queryEndpoint = req.query_endpoint || '';
   if (!endpoint && req.provider) {
@@ -114,7 +119,7 @@ function createConfig(db, log, req) {
       queryEndpoint = '/v1/videos/{taskId}';
     }
   }
-  const defaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
+  const defaultModel = storedDefaultModel(req.base_url, req.default_model);
   const info = db.prepare(
     `INSERT INTO ai_service_configs (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, endpoint, query_endpoint, priority, is_default, is_active, settings, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
@@ -169,11 +174,13 @@ function updateConfig(db, log, id, req) {
   }
   if (req.model != null) {
     updates.push('model = ?');
-    params.push(modelToDb(req.model));
+    const base = req.base_url != null ? req.base_url : existing.base_url;
+    params.push(storedModelValue(base, req.model));
   }
   if (req.default_model !== undefined) {
     updates.push('default_model = ?');
-    params.push(req.default_model != null ? String(req.default_model).trim() || null : null);
+    const base = req.base_url != null ? req.base_url : existing.base_url;
+    params.push(storedDefaultModel(base, req.default_model));
   }
   if (req.priority != null) {
     updates.push('priority = ?');
@@ -224,8 +231,8 @@ function rowToConfig(r) {
     name: r.name,
     base_url: r.base_url,
     api_key: r.api_key,
-    model: modelFromDb(r.model),
-    default_model: r.default_model ? String(r.default_model).trim() : null,
+    model: remapArkModelList(r.base_url, modelFromDb(r.model)),
+    default_model: r.default_model ? storedDefaultModel(r.base_url, r.default_model) : null,
     endpoint: r.endpoint,
     query_endpoint: r.query_endpoint,
     priority: r.priority ?? 0,
@@ -255,8 +262,8 @@ async function testConnection(opts) {
   const base = (opts.base_url || '').replace(/\/$/, '');
   if (!base) throw new Error('base_url 必填');
   if (!opts.api_key) throw new Error('api_key 必填');
-  const models = Array.isArray(opts.model) ? opts.model : opts.model != null ? [opts.model] : [];
-  const model = models[0] || '';
+  const models = flattenModelIds(opts.model);
+  const model = remapArkModelId(opts.base_url, models[0] || '');
   if (!model && (opts.provider === 'gemini' || opts.provider === 'google')) throw new Error('model 必填');
   const provider = (opts.provider || 'openai').toLowerCase();
   const serviceType = (opts.service_type || '').toLowerCase();
@@ -438,6 +445,9 @@ async function testConnection(opts) {
     messages: [{ role: 'user', content: 'Hello' }],
     max_tokens: 5,
   };
+  if (isOfficialArkBase(base) && (/^deepseek-v4/i.test(body.model) || /^doubao-seed-2/i.test(body.model))) {
+    body.thinking = { type: 'disabled' };
+  }
   body = applyDeepSeekConnectivityOptions(
     { provider, base_url: base, settings: opts.settings },
     body

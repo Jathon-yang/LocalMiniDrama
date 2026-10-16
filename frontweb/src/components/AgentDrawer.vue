@@ -79,6 +79,17 @@ function notifyChanged(toolName) {
   window.dispatchEvent(new CustomEvent('lmd-agent-changed', { detail: { dramaId: props.dramaId } }))
 }
 
+function taskResult(data) {
+  const raw = data?.result
+  if (!raw) return {}
+  if (typeof raw === 'object') return raw
+  try {
+    return JSON.parse(raw)
+  } catch (_) {
+    return {}
+  }
+}
+
 function watchTask(taskId, message) {
   const timer = setInterval(async () => {
     try {
@@ -87,11 +98,17 @@ function watchTask(taskId, message) {
       if (!data || (data.status !== 'completed' && data.status !== 'failed')) return
       clearInterval(timer)
       timers.delete(timer)
-      const result = data.result || {}
+      const result = taskResult(data)
       message.imageUrl = result.image_url || message.imageUrl
       message.localPath = result.local_path || message.localPath
-      message.summary = data.status === 'failed' ? (data.error || '生成失败') : (message.summary || '已完成')
-      if (data.status === 'completed') notifyChanged('generate_image')
+      if (data.status === 'failed') {
+        message.summary = data.error || data.message || '生成失败'
+      } else if (result.count != null) {
+        message.summary = `已完成，共 ${result.count} 个`
+      } else {
+        message.summary = '已完成'
+      }
+      notifyChanged('generate_image')
     } catch (_) {
       /* 下一轮再查 */
     }
