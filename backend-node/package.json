@@ -13,6 +13,9 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@mastra/core": "^1.78.0",
+    "@mastra/libsql": "^1.26.2",
+    "@mastra/memory": "^1.38.0",
     "@volcengine/openapi": "^1.36.1",
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^11.6.0",
@@ -23,6 +26,7 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^1.4.5-lts.1",
     "sharp": "^0.34.5",
-    "uuid": "^10.0.0"
+    "uuid": "^10.0.0",
+    "zod": "^4.6.7"
   }
 }

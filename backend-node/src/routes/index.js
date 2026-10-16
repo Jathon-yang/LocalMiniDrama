@@ -317,6 +317,13 @@ function setupRouter(cfg, db, log) {
   r.put('/scene-model-map/:key', sceneModelMap.update);
   r.delete('/scene-model-map/:key', sceneModelMap.delete);
 
+  const { createAgentHandlers } = require('./agent');
+  const agent = createAgentHandlers(db, log);
+  r.post('/agent/chat', agent.chat);
+  r.post('/agent/approve', agent.approve);
+  r.post('/agent/decline', agent.decline);
+  r.get('/agent/history', agent.history);
+
   // 启动时将已有的覆盖加载到 promptI18n 内存缓存
   try {
     const promptI18n = require('../services/promptI18n');
