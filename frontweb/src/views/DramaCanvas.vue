@@ -260,6 +260,7 @@
 
 <script setup>
 import { computed, markRaw, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue'
+import { useAgentContext } from '@/stores/agentContext'
 import { useRoute, useRouter } from 'vue-router'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -903,7 +904,20 @@ watch(() => route.params.id, () => {
 
 watch(drama, () => startStatusPoll())
 
+const agentContext = useAgentContext()
+watch(filterEpisodeId, (id) => {
+  agentContext.setEpisodeId(id ?? null)
+}, { immediate: true })
+
+function onAgentChanged(event) {
+  if (Number(event.detail?.dramaId) !== Number(route.params.id)) return
+  loadDrama(true)
+}
+window.addEventListener('lmd-agent-changed', onAgentChanged)
+
 onBeforeUnmount(() => {
+  window.removeEventListener('lmd-agent-changed', onAgentChanged)
+  agentContext.clear()
   if (saveTimer) clearTimeout(saveTimer)
   if (savedHintTimer) clearTimeout(savedHintTimer)
   if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
