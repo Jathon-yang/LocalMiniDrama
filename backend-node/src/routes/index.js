@@ -217,6 +217,7 @@ function setupRouter(cfg, db, log) {
   r.post('/episodes/:episode_id/characters/extract', stub.episodeCharactersExtract);
   r.get('/episodes/:episode_id/storyboards', storyboards.episodeStoryboardsGet);
   r.post('/episodes/:episode_id/finalize', drama.finalizeEpisode);
+  r.post('/episodes/:episode_id/export/jianying', drama.exportEpisodeJianyingDraft);
   r.get('/episodes/:episode_id/download', drama.downloadEpisodeVideo);
 
   // ---------- tasks ----------
@@ -252,6 +253,9 @@ function setupRouter(cfg, db, log) {
   r.get('/videos', videos.list);
   r.post('/videos', videos.create);
   r.post('/videos/upload-manual', uploadModule.multerVideoSingle, videos.uploadManual);
+  r.post('/videos/extension-credential', videos.extensionCredential);
+  // 签名校验必须在 multer 之前，非法请求不占用内存/落盘
+  r.post('/videos/upload-extension', videos.verifyExtensionUpload, uploadModule.multerVideoSingle, videos.uploadExtension);
   r.post('/videos/image/:image_gen_id', videos.fromImage);
   r.post('/videos/episode/:episode_id/batch', videos.episodeBatch);
   r.post('/videos/:id/resume-poll', videos.resumePoll);

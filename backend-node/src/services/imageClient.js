@@ -1576,7 +1576,9 @@ async function callImageApi(db, log, opts) {
     ratio: isAgnes && agnesSizeSpec ? agnesSizeSpec.ratio : undefined,
     original_size: size !== effectiveSize ? size : undefined,
     is_agnes: isAgnes,
+    body_json: JSON.stringify(body),
   });
+
   const openaiCompatHeaders = {
     'Content-Type': 'application/json',
     Authorization: 'Bearer ' + (config.api_key || ''),

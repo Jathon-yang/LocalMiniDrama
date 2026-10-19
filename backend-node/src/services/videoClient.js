@@ -3270,6 +3270,69 @@ async function resolveJimengApiImageBuffer(rawUrl, files_base_url, storage_local
 }
 
 /**
+ * 用 Node http(s) 直连发送 POST 并自定义超时。
+ * 避免 undici fetch 的内置 headersTimeout/bodyTimeout（默认 5 分钟）在视频生成等长耗时请求上提前掐断。
+ * @param {string} url
+ * @param {Record<string,string>} headers
+ * @param {Buffer|string} body
+ * @param {number} timeoutMs
+ * @returns {Promise<{ statusCode: number, raw: string }>}
+ */
+function postBodyWithTimeout(url, headers, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (e) {
+      reject(e);
+      return;
+    }
+    const mod = parsed.protocol === 'https:' ? require('https') : require('http');
+    const bodyBuffer = Buffer.isBuffer(body)
+      ? body
+      : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body), 'utf-8');
+
+    const req = mod.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        path: parsed.pathname + parsed.search,
+        method: 'POST',
+        headers: { ...headers, 'Content-Length': bodyBuffer.length },
+        // 避免优先连不可达的 IPv6 导致 ETIMEDOUT
+        family: 4,
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          clearTimeout(timer);
+          resolve({ statusCode: res.statusCode || 0, raw: Buffer.concat(chunks).toString('utf-8') });
+        });
+        res.on('error', (e) => {
+          clearTimeout(timer);
+          reject(e);
+        });
+      }
+    );
+
+    const timer = setTimeout(() => {
+      req.destroy();
+      const err = new Error('请求超时（' + Math.round(timeoutMs / 1000) + 's）');
+      err.name = 'TimeoutError';
+      reject(err);
+    }, timeoutMs);
+
+    req.on('error', (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    req.write(bodyBuffer);
+    req.end();
+  });
+}
+
+/**
  * 用户自托管 jimeng-free-api-all：POST /v1/videos/generations（multipart 或 JSON）
  * @returns {Promise<{ video_url?: string, error?: string }>}
  */
@@ -3339,26 +3402,36 @@ async function callJimengAiApiVideo(config, log, opts) {
   }
 
   const prompt = (opts.prompt || '').toString();
-  const headers = { Authorization: 'Bearer ' + apiKey };
-  let fetchOpts = { method: 'POST', headers };
+  const authHeaders = { Authorization: 'Bearer ' + apiKey };
+  const longWaitMs = 15 * 60 * 1000;
 
-  const longWaitMs = 10 * 60 * 1000;
-  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-    fetchOpts.signal = AbortSignal.timeout(longWaitMs);
-  }
-
+  let reqHeaders;
+  let reqBody;
   if (fileParts.length > 0) {
-    const form = new FormData();
-    form.append('model', model);
-    form.append('prompt', prompt);
-    form.append('ratio', ratio);
-    form.append('duration', String(dur));
-    form.append('resolution', resolution);
+    const boundary = 'jimengform_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const textFields = [
+      ['model', model],
+      ['prompt', prompt],
+      ['ratio', ratio],
+      ['duration', String(dur)],
+      ['resolution', resolution],
+    ];
+    const textPart = textFields
+      .map(([name, value]) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`)
+      .join('');
+    const parts = [Buffer.from(textPart, 'utf-8')];
     for (const { buffer, filename } of fileParts) {
-      const blob = new Blob([buffer]);
-      form.append('files', blob, filename || 'image.jpg');
+      const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${filename || 'image.jpg'}"\r\nContent-Type: application/octet-stream\r\n\r\n`;
+      parts.push(Buffer.from(fileHeader, 'utf-8'), buffer, Buffer.from('\r\n', 'utf-8'));
     }
-    fetchOpts.body = form;
+    parts.push(Buffer.from(`--${boundary}--\r\n`, 'utf-8'));
+    reqBody = Buffer.concat(parts);
+    reqHeaders = { ...authHeaders, 'Content-Type': `multipart/form-data; boundary=${boundary}` };
+    log.info('[JimengAI] form 内容', {
+      video_gen_id,
+      fields: textFields,
+      files: fileParts.map((f) => ({ filename: f.filename || 'image.jpg', bytes: f.buffer.length })),
+    });
     log.info('[JimengAI] multipart 提交', {
       video_gen_id,
       url,
@@ -3369,43 +3442,45 @@ async function callJimengAiApiVideo(config, log, opts) {
       file_count: fileParts.length,
     });
   } else {
-    fetchOpts.headers = { ...headers, 'Content-Type': 'application/json' };
-    fetchOpts.body = JSON.stringify({
+    reqBody = JSON.stringify({
       model,
       prompt,
       ratio,
       duration: dur,
       resolution,
     });
+    reqHeaders = { ...authHeaders, 'Content-Type': 'application/json' };
     log.info('[JimengAI] JSON 提交（无参考图）', { video_gen_id, url, model, ratio, duration: dur, resolution });
   }
 
-  let res;
+  let status;
+  let raw;
   try {
-    res = await fetch(url, fetchOpts);
+    const resp = await postBodyWithTimeout(url, reqHeaders, reqBody, longWaitMs);
+    status = resp.statusCode;
+    raw = resp.raw;
   } catch (e) {
-    const msg = e.name === 'AbortError' || e.name === 'TimeoutError' ? '请求超时（视频生成较慢，可稍后重试）' : e.message;
+    const msg = e.name === 'TimeoutError' || e.name === 'AbortError' ? '请求超时（视频生成较慢，可稍后重试）' : e.message;
     log.error('[JimengAI] 请求失败', { video_gen_id, message: e.message });
     return { error: 'Jimeng AI API 请求失败: ' + msg };
   }
 
-  const raw = await res.text();
-  log.info('[JimengAI] 响应', { video_gen_id, status: res.status, raw_head: raw.slice(0, 800) });
+  log.info('[JimengAI] 响应', { video_gen_id, status, raw_head: raw.slice(0, 800) });
   let data;
   try {
     data = JSON.parse(raw);
   } catch (_) {
-    return { error: 'Jimeng AI API 非 JSON 响应 (' + res.status + '): ' + raw.slice(0, 300) };
+    return { error: 'Jimeng AI API 非 JSON 响应 (' + status + '): ' + raw.slice(0, 300) };
   }
 
-  if (!res.ok) {
+  if (status < 200 || status >= 300) {
     const errMsg =
       data?.error?.message ||
       data?.error ||
       data?.errmsg ||
       data?.message ||
       raw.slice(0, 400);
-    return { error: 'Jimeng AI API ' + res.status + ': ' + (typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg)) };
+    return { error: 'Jimeng AI API ' + status + ': ' + (typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg)) };
   }
 
   const videoUrl = data?.data?.[0]?.url || data?.data?.[0]?.video_url;

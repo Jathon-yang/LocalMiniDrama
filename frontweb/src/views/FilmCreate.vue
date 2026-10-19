@@ -487,7 +487,10 @@
                     <div class="asset-btns">
                       <el-button size="small" @click="editCharacter(char)">编辑</el-button>
                       <el-button size="small" :loading="addingCharToLibraryId === char.id" :disabled="!hasAssetImage(char)" @click="onAddCharacterToLibrary(char)">
-                        加入本剧库33
+                        加入本剧库
+                      </el-button>
+                      <el-button size="small" @click="copyAssetImagePrompt(char, 'character')">
+                        复制提示词
                       </el-button>
                       <el-button size="small" :loading="addingCharToMaterialId === char.id" :disabled="!hasAssetImage(char)" @click="onAddCharacterToMaterialLibrary(char)">
                         加入素材库
@@ -636,6 +639,9 @@
                       <el-button size="small" :loading="addingPropToLibraryId === prop.id" :disabled="!hasAssetImage(prop)" @click="onAddPropToLibrary(prop)">
                         加入本剧库
                       </el-button>
+                      <el-button size="small" @click="copyAssetImagePrompt(prop, 'prop')">
+                        复制提示词
+                      </el-button>
                       <el-button size="small" :loading="addingPropToMaterialId === prop.id" :disabled="!hasAssetImage(prop)" @click="onAddPropToMaterialLibrary(prop)">
                         加入素材库
                       </el-button></div>
@@ -736,6 +742,9 @@
                       <el-button size="small" @click="editScene(scene)">编辑</el-button>
                       <el-button size="small" :loading="addingSceneToLibraryId === scene.id" :disabled="!hasAssetImage(scene)" @click="onAddSceneToLibrary(scene)">
                         加入本剧库
+                      </el-button>
+                      <el-button size="small" @click="copyAssetImagePrompt(scene, 'scene')">
+                        复制提示词
                       </el-button>
                       <el-button size="small" :loading="addingSceneToMaterialId === scene.id" :disabled="!hasAssetImage(scene)" @click="onAddSceneToMaterialLibrary(scene)">
                         加入素材库
@@ -1537,10 +1546,7 @@
                 </div>
               </div>
               <div v-if="getSbVideo(sb.id)" class="sb-video-actions">
-                <el-button size="small" :loading="isSbVideoGenerating(sb.id)" :disabled="!sbCanSubmitVideo(sb) || isSbVideoGenerating(sb.id)" @click="onGenerateSbVideo(sb)">1重新生成</el-button>
-                <el-tooltip content="手动上传本地视频替换当前分镜视频" placement="top">
-                  <el-button size="small" :loading="uploadingSbVideoId === sb.id" :disabled="isSbVideoGenerating(sb.id)" @click="onUploadSbVideoClick(sb)">上传替换</el-button>
-                </el-tooltip>
+                <el-button size="small" :loading="isSbVideoGenerating(sb.id)" :disabled="!sbCanSubmitVideo(sb) || isSbVideoGenerating(sb.id)" @click="onGenerateSbVideo(sb)">重新生成</el-button>
                 <el-tooltip v-if="getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
                   <el-button size="small" :loading="linkingTailFrameIds.has(sb.id)" @click="onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
                 </el-tooltip>
@@ -1553,6 +1559,30 @@
                   <el-button size="small" @click="playSbDialogueTts(sb)">
                     <el-icon><VideoPlay /></el-icon>
                   </el-button>
+                </el-tooltip>
+              </div>
+              <!-- 上传替换：所有模式显示；复制提示词：经典模式显示；复制全能提示词：所有模式显示 -->
+              <div class="sb-video-upload-replace">
+                <el-tooltip content="手动上传本地视频替换当前分镜视频" placement="top">
+                  <el-button size="small" :loading="uploadingSbVideoId === sb.id" @click="onUploadSbVideoClick(sb)">上传替换</el-button>
+                </el-tooltip>
+                <template v-if="!isSbUniversalMode(sb.id)">
+                  <el-tooltip content="复制该分镜的视频生成提示词" placement="top">
+                    <el-button size="small" @click="copySbVideoPrompt(sb)">复制提示词</el-button>
+                  </el-tooltip>
+                </template>
+                <el-tooltip content="复制为全能提示词 JSON（镜头名 + 参考图地址 + 图片映射与视频提示词）" placement="top">
+                  <el-button size="small" @click="copySbOmniPromptJson(sb)">复制全能提示词</el-button>
+                </el-tooltip>
+                <el-tooltip :content="sbTaskTip(sb)" placement="top">
+                  <el-button
+                    size="small"
+                    type="primary"
+                    plain
+                    :loading="sbTaskStatus[sb.id] === 'sending'"
+                    :disabled="sbTaskStatus[sb.id] === 'sending'"
+                    @click="sendSbTaskToExtension(sb)"
+                  >{{ sbTaskLabel(sb) }}</el-button>
                 </el-tooltip>
               </div>
               <div class="sb-video-prompt-label">
@@ -1641,15 +1671,27 @@
       <!-- 8. 合成视频 -->
       <section id="anchor-video" class="section card">
         <h2 class="section-title">合成视频</h2>
-        <el-button
-          type="primary"
-          size="large"
-          :loading="videoStatus === 'generating'"
-          :disabled="!currentEpisodeId || storyboards.length === 0 || videoStatus === 'generating'"
-          @click="onGenerateVideo"
-        >
-          合成视频
-        </el-button>
+        <div class="video-option-row">
+          <el-button
+            type="primary"
+            size="large"
+            :loading="videoStatus === 'generating'"
+            :disabled="!currentEpisodeId || storyboards.length === 0 || videoStatus === 'generating'"
+            @click="onGenerateVideo"
+          >
+            合成视频
+          </el-button>
+          <el-tooltip content="按分镜顺序导出剪映草稿 ZIP（含视频、对白配音与旁白字幕），解压到剪映草稿目录即可打开" placement="top">
+            <el-button
+              size="large"
+              :loading="exportingJianying"
+              :disabled="!currentEpisodeId || storyboards.length === 0"
+              @click="onExportJianyingDraft"
+            >
+              导出到剪映
+            </el-button>
+          </el-tooltip>
+        </div>
         <div v-if="videoStatus === 'generating'" class="video-progress">
           <el-progress :percentage="videoProgress" :status="videoProgress >= 100 ? 'success' : undefined" />
           <p>视频生成中...</p>
@@ -2820,6 +2862,7 @@ const currentEpisode = computed(() => store.currentEpisode)
 const currentEpisodeId = computed(() => store.currentEpisode?.id ?? null)
 const videoProgress = computed(() => store.videoProgress)
 const videoStatus = computed(() => store.videoStatus)
+const exportingJianying = ref(false)
 
 function trackFilmCreateAction(_action, _payload = {}) {
   // 单机版：无埋点上报
@@ -3289,6 +3332,9 @@ const sbImageUploadForId = ref(null)
 const uploadingSbVideoId = ref(null)
 const sbVideoFileInput = ref(null)
 const sbVideoUploadForId = ref(null)
+// 浏览器插件「发送任务」：扩展 ID 固定；分镜 -> 'sending' | 'sent'
+const EXTENSION_ID = 'ekoobmaofgcmaipkhjpbggofhkilponh'
+const sbTaskStatus = ref({})
 // 角色/道具/场景 上传图片
 const resourceImageFileInput = ref(null)
 const resourceUploadType = ref(null) // 'character' | 'prop' | 'scene'
@@ -3589,6 +3635,221 @@ function assetImageUrl(item) {
 function hasAssetImage(item) {
   if (!item) return false
   return !!(item.image_url || item.local_path)
+}
+/** 复制文本到剪贴板，优先 navigator.clipboard，失败时降级 execCommand */
+async function copyTextToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch (_) {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+      return true
+    } catch (e) {
+      return false
+    }
+  }
+}
+/** 复制素材的图片生成提示词：角色取 polished_prompt，道具取 prompt，场景按当前生成模式取对应提示词 */
+async function copyAssetImagePrompt(item, kind) {
+  if (!item) return
+  let prompt = ''
+  if (kind === 'character') {
+    prompt = item.polished_prompt || ''
+  } else if (kind === 'prop') {
+    prompt = item.prompt || ''
+  } else if (kind === 'scene') {
+    prompt = sceneUseQuadGrid.value
+      ? (item.polished_prompt || item.polished_prompt_single || '')
+      : (item.polished_prompt_single || item.polished_prompt || '')
+  }
+  prompt = String(prompt).trim()
+  if (!prompt) {
+    ElMessage.warning('暂无图片提示词')
+    return
+  }
+  if (await copyTextToClipboard(prompt)) {
+    ElMessage.success('提示词已复制')
+  } else {
+    ElMessage.error('复制失败')
+  }
+}
+/** 复制分镜的视频生成提示词 */
+async function copySbVideoPrompt(sb) {
+  const prompt = String(sb?.video_prompt || '').trim()
+  if (!prompt) {
+    ElMessage.warning('暂无视频提示词')
+    return
+  }
+  if (await copyTextToClipboard(prompt)) {
+    ElMessage.success('视频提示词已复制')
+  } else {
+    ElMessage.error('复制失败')
+  }
+}
+/**
+ * 构造全能提示词条目：镜头名（#序号 + 标题）+ 参考图绝对地址（场景→角色→物品，与 @ 编号同序）
+ * + 图片映射行（经典模式追加；已是全能模式时片段描述自身已按 @图N 编排，不再追加；全能模式另追加视频比例与时长）与完整视频提示词。图片引用统一为 @图N。复制与发送任务共用。
+ */
+function buildSbOmniPromptItem(sb) {
+  if (!sb?.id) return null
+  const num = sb.storyboard_number ?? sb.id
+  const title = (sb.title || '').toString().trim()
+  const slots = getSbUniversalOmniRefSlots(sb)
+  const images = slots.map((s) => toAbsoluteImageUrl(s.thumbUrl)).filter((u) => !!u)
+  const mapLines = isSbUniversalMode(sb.id)
+    ? []
+    : slots.map((s, i) => {
+        const n = (s.name || '').toString().trim()
+        return `${n || `参考图${i + 1}`}: @图${i + 1}`
+      })
+  const body = String(buildSbVideoPromptForApi(sb) || '')
+    .replace(/@图片(\d+)/g, '@图$1')
+    .trim()
+  // 全能模式：附加视频比例与时长（有值时），供外部工具按参数出片
+  const paramLines = []
+  if (isSbUniversalMode(sb.id)) {
+    const ratio = (projectAspectRatio.value || '').toString().trim()
+    if (ratio) paramLines.push(`视频比例: ${ratio}`)
+    const dur = getSbVideoDurationForApi(sb)
+    if (dur) paramLines.push(`时长: ${dur}秒`)
+  }
+  if (!images.length && !body) return null
+  return {
+    name: title ? `#${num} ${title}` : `#${num}`,
+    images,
+    prompt: [...mapLines, body, ...paramLines].filter((l) => !!l).join(' \n'),
+  }
+}
+/** 复制全能提示词 JSON */
+async function copySbOmniPromptJson(sb) {
+  const payload = buildSbOmniPromptItem(sb)
+  if (!payload) {
+    ElMessage.warning('暂无可复制的全能提示词')
+    return
+  }
+  const text = '[\n  ' + JSON.stringify(payload) + '\n]'
+  if (await copyTextToClipboard(text)) {
+    ElMessage.success('全能提示词已复制')
+  } else {
+    ElMessage.error('复制失败')
+  }
+}
+function sbTaskLabel(sb) {
+  const st = sb?.id ? sbTaskStatus.value[sb.id] : ''
+  if (st === 'sending') return '发送中…'
+  if (st === 'sent') return '任务发送中…'
+  if (st === 'done') return '已回传'
+  return '发送任务'
+}
+function sbTaskTip(sb) {
+  const st = sb?.id ? sbTaskStatus.value[sb.id] : ''
+  if (st === 'sent') return '任务已发送到插件，正在等待视频回传，可再次点击重新发送'
+  if (st === 'done') return '插件视频已回传并关联到当前分镜，可再次点击重新发送'
+  return '将本分镜全能提示词 JSON 发送到浏览器插件启动视频生成任务'
+}
+// 插件任务轮询：等待插件回传视频后刷新该分镜视频列表
+const sbTaskPollers = {}
+const SB_TASK_POLL_INTERVAL_MS = 5000
+const SB_TASK_POLL_MAX_MS = 60 * 60 * 1000
+function stopSbTaskPoll(storyboardId) {
+  const timer = sbTaskPollers[storyboardId]
+  if (timer) {
+    clearInterval(timer)
+    delete sbTaskPollers[storyboardId]
+  }
+}
+/** 轮询该分镜视频列表，出现新增的已完成视频即刷新页面数据 */
+function startSbTaskPoll(sb, baselineIds) {
+  stopSbTaskPoll(sb.id)
+  const startedAt = Date.now()
+  sbTaskPollers[sb.id] = setInterval(async () => {
+    if (Date.now() - startedAt > SB_TASK_POLL_MAX_MS) {
+      stopSbTaskPoll(sb.id)
+      ElMessage.warning('等待插件回传超时，可手动刷新页面查看')
+      return
+    }
+    try {
+      const res = await videosAPI.list({ storyboard_id: sb.id, page: 1, page_size: 50 })
+      const items = Array.isArray(res?.items) ? res.items : []
+      const arrived = items.some((i) => !baselineIds.has(i.id) && i.status === 'completed' && recordHasPlayableVideoUrl(i))
+      if (!arrived) return
+      sbVideos.value = { ...sbVideos.value, [sb.id]: items }
+      restoreSelectionsFromBackend()
+      stopSbTaskPoll(sb.id)
+      sbTaskStatus.value = { ...sbTaskStatus.value, [sb.id]: 'done' }
+      ElMessage.success('插件视频已回传并关联到当前分镜')
+    } catch (_) {}
+  }, SB_TASK_POLL_INTERVAL_MS)
+}
+/** 发送任务到浏览器插件：签发上传凭证 → 通过 BATCH_START 推送 JSON */
+async function sendSbTaskToExtension(sb) {
+  if (!sb?.id || sbTaskStatus.value[sb.id] === 'sending') return
+  const item = buildSbOmniPromptItem(sb)
+  if (!item) {
+    ElMessage.warning('暂无可发送的全能提示词')
+    return
+  }
+  if (typeof chrome === 'undefined' || !chrome?.runtime?.sendMessage) {
+    ElMessage.error('未检测到浏览器插件，请在已安装插件的 Chrome 中打开本页面')
+    return
+  }
+  const baselineIds = new Set((sbVideos.value[sb.id] || []).map((i) => i.id))
+  sbTaskStatus.value = { ...sbTaskStatus.value, [sb.id]: 'sending' }
+  try {
+    const cred = await videosAPI.extensionCredential(sb.id)
+    const origin = (typeof window !== 'undefined' ? window.location.origin : '').replace(/\/$/, '')
+    // 上传所需参数全部拼进 uploadUrl，插件直接 POST 文件到该地址即可
+    const uploadParams = {
+      storyboard_id: sb.id,
+      drama_id: dramaId.value || '',
+      ts: cred?.ts,
+      nonce: cred?.nonce,
+      sign: cred?.sign,
+    }
+    const query = new URLSearchParams(
+      Object.fromEntries(Object.entries(uploadParams).filter(([, v]) => v !== undefined && v !== null && v !== ''))
+    ).toString()
+    const uploadUrl = `${origin}/api/v1/videos/upload-extension?${query}`
+    await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        EXTENSION_ID,
+        {
+          type: 'BATCH_START',
+          items: [item],
+          options: {
+            autoSend: true,
+            newChat: true,
+            waitForVideo: true,
+            autoDownload: true,
+            delay: 10,
+            uploadWait: 45,
+            startIdx: 1,
+            uploadUrl,
+          },
+        },
+        (res) => {
+          const lastError = chrome.runtime.lastError
+          if (lastError) return reject(new Error(lastError.message || '插件通信失败'))
+          if (res && res.ok === false) return reject(new Error(res.error || '插件拒绝任务'))
+          resolve(res)
+        }
+      )
+    })
+    sbTaskStatus.value = { ...sbTaskStatus.value, [sb.id]: 'sent' }
+    ElMessage.success('任务已发送到插件')
+    startSbTaskPoll(sb, baselineIds)
+  } catch (e) {
+    sbTaskStatus.value = { ...sbTaskStatus.value, [sb.id]: 'idle' }
+    ElMessage.error(e.message || '任务发送失败')
+  }
 }
 function getSelectedStyle() {
   return getSelectedStylePrompt()
@@ -6181,7 +6442,7 @@ function getSbUniversalOmniRefSlots(sb) {
     out.push({
       index: idx++,
       kind: 'scene',
-      name: (scene.name || '场景').toString(),
+      name: (scene.location || '场景').toString(),
       thumbUrl: assetImageUrl(scene),
     })
   }
@@ -7129,6 +7390,38 @@ function getFinalizeMergeOptions() {
     burn_narration_subtitles: !!videoSubtitle.value,
     burn_dialogue_audio: !!videoBurnDialogue.value,
     watermark_text: videoWatermark.value ? String(videoWatermarkText.value || '').trim().slice(0, 200) : '',
+  }
+}
+
+async function onExportJianyingDraft() {
+  if (!currentEpisodeId.value || exportingJianying.value) return
+  exportingJianying.value = true
+  try {
+    const blob = await dramaAPI.exportEpisodeJianyingDraft(currentEpisodeId.value)
+    if (!(blob instanceof Blob)) throw new Error('导出失败')
+    // 后端出错时会返回 JSON（仍是 blob），这里解析出可读错误信息
+    if ((blob.type || '').includes('application/json')) {
+      const text = await blob.text()
+      let msg = '导出剪映草稿失败'
+      try {
+        const j = JSON.parse(text)
+        msg = j?.error?.message || j?.message || msg
+      } catch (_) {}
+      throw new Error(msg)
+    }
+    const dramaTitle = store.drama?.title || '短剧'
+    const epNum = store.currentEpisode?.episode_number ?? ''
+    const name = `${dramaTitle}_第${epNum}集`.replace(/[\\/:*?"<>|]/g, '_')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `${name}.zip`
+    a.click()
+    URL.revokeObjectURL(a.href)
+    ElMessage.success('剪映草稿已导出，解压到剪映草稿目录即可打开')
+  } catch (e) {
+    ElMessage.error(e.message || '导出剪映草稿失败')
+  } finally {
+    exportingJianying.value = false
   }
 }
 
@@ -10320,6 +10613,12 @@ html.light .sb-video-placeholder {
   margin-top: 8px;
   flex-shrink: 0;
   padding-top: 6px;
+}
+.sb-video-upload-replace {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-shrink: 0;
 }
 .sb-video-regenerating-overlay {
   display: flex;

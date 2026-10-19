@@ -27,4 +27,8 @@ export const videosAPI = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
+  /** 签发插件上传凭证（后端 HMAC 签名），返回 { storyboard_id, ts, nonce, sign, expires_in } */
+  extensionCredential(storyboardId) {
+    return request.post('/videos/extension-credential', { storyboard_id: Number(storyboardId) })
+  },
 }

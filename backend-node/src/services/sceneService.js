@@ -55,6 +55,7 @@ function deleteScene(db, log, sceneId) {
   return { ok: true };
 }
 
+
 function createScene(db, log, dramaId, req) {
   const now = new Date().toISOString();
   const episodeId = req.episode_id != null ? Number(req.episode_id) : null;

@@ -11,6 +11,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
+    allowedHosts: ['.trycloudflare.com'],
     port: 3013,
     proxy: {
       '/api': {

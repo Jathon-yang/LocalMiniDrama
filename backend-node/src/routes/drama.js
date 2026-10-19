@@ -3,6 +3,7 @@ const propService = require('../services/propService');
 const response = require('../response');
 const dramaExportService = require('../services/dramaExportService');
 const dramaImportService = require('../services/dramaImportService');
+const jianyingExportService = require('../services/jianyingExportService');
 
 function createDrama(db, log) {
   return (req, res) => {
@@ -168,6 +169,23 @@ function downloadEpisodeVideo(db) {
   };
 }
 
+function exportEpisodeJianyingDraft(db, cfg, log) {
+  return (req, res) => {
+    const episodeId = req.params.episode_id;
+    if (!episodeId) return response.badRequest(res, 'episode_id不能为空');
+    try {
+      const { buffer, filename } = jianyingExportService.exportEpisodeDraft(db, cfg, log, episodeId);
+      const safeName = String(filename || 'draft.zip').replace(/[^\w\u4e00-\u9fff\-.()]/g, '_');
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(safeName)}`);
+      res.send(buffer);
+    } catch (err) {
+      log.error('Export jianying draft failed', { episode_id: episodeId, error: err.message });
+      response.internalError(res, err.message || '导出剪映草稿失败');
+    }
+  };
+}
+
 function exportDrama(db, cfg, log) {
   return (req, res) => {
     try {
@@ -295,6 +313,7 @@ module.exports = function dramaRoutes(db, cfg, log) {
     saveCanvasLayout: saveCanvasLayout(db, log),
     listProps: listProps(db),
     finalizeEpisode: finalizeEpisode(db, log, cfg),
+    exportEpisodeJianyingDraft: exportEpisodeJianyingDraft(db, cfg, log),
     downloadEpisodeVideo: downloadEpisodeVideo(db),
     generateStoryboard: generateStoryboard(db, log),
     exportDrama: exportDrama(db, cfg, log),

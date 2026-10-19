@@ -52,6 +52,10 @@ export const dramaAPI = {
   finalizeEpisode(episodeId, data) {
     return request.post(`/episodes/${episodeId}/finalize`, data || {})
   },
+  /** 导出该集为剪映草稿 ZIP（blob） */
+  exportEpisodeJianyingDraft(episodeId) {
+    return request.post(`/episodes/${episodeId}/export/jianying`, {}, { responseType: 'blob' })
+  },
   extractBackgrounds(episodeId, body) {
     return request.post(`/images/episode/${episodeId}/backgrounds/extract`, body || {})
   },

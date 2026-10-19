@@ -4,9 +4,69 @@ const videoService = require('../services/videoService');
 const taskService = require('../services/taskService');
 const uploadService = require('../services/uploadService');
 const storageLayout = require('../services/storageLayout');
+const extensionAuth = require('../services/extensionAuth');
+const { loadConfig } = require('../config');
 const { normalizeAspectRatioForApi } = require('../services/videoClient');
 
 function routes(db, log) {
+  /** 手动/插件上传视频：保存文件 → 写入 video_generations(completed) → 回写分镜主视频 */
+  const persistUploadedVideo = (req, res, { provider, prompt }) => {
+    try {
+      if (!req.file || !req.file.buffer) {
+        return response.badRequest(res, '请选择视频文件');
+      }
+      // 签名中间件已解析并校验 storyboard_id，优先使用其结果
+      const storyboardId = Number(req.extensionUpload?.storyboardId || req.body?.storyboard_id || 0);
+      if (!storyboardId || storyboardId <= 0) {
+        return response.badRequest(res, 'storyboard_id 必填');
+      }
+      const sbRow = db.prepare('SELECT id, episode_id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(storyboardId);
+      if (!sbRow) {
+        return response.notFound(res, '分镜不存在');
+      }
+      // storyboards 没有 drama_id，需通过 episode 关联获取
+      let dramaId = 0;
+      try {
+        const ep = db.prepare('SELECT drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL').get(sbRow.episode_id);
+        dramaId = ep?.drama_id || 0;
+      } catch (_) {}
+      const cfg = loadConfig();
+      const rawStorage = cfg?.storage?.local_path || './data/storage';
+      const storagePath = path.isAbsolute(rawStorage) ? rawStorage : path.join(process.cwd(), rawStorage);
+      const baseUrl = (cfg?.storage?.base_url || '').replace(/\/$/, '');
+      const projectSubdir = dramaId ? storageLayout.getProjectStorageSubdir(db, dramaId) : null;
+      const result = uploadService.uploadFile(
+        storagePath,
+        baseUrl,
+        log,
+        req.file.buffer,
+        req.file.originalname || 'video.mp4',
+        req.file.mimetype,
+        'videos',
+        projectSubdir
+      );
+      const now = new Date().toISOString();
+      // 写入一条已完成的 video_generations 记录，便于前端「历史视频」切换
+      db.prepare(
+        `INSERT INTO video_generations
+          (drama_id, storyboard_id, provider, prompt, video_url, local_path, status, completed_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`
+      ).run(dramaId, storyboardId, provider, prompt, result.url || null, result.local_path, now, now, now);
+      const videoGenId = db.prepare('SELECT last_insert_rowid() as id').get().id;
+      // 回写分镜主视频地址，合成视频时直接采用
+      try {
+        db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
+          .run(result.url || null, result.local_path, now, storyboardId);
+      } catch (_) {}
+      const item = videoService.getById(db, videoGenId);
+      log.info('Video uploaded for storyboard', { provider, storyboard_id: storyboardId, video_gen_id: videoGenId, local_path: result.local_path });
+      response.created(res, item || { id: videoGenId, status: 'completed', video_url: result.url, local_path: result.local_path });
+    } catch (err) {
+      log.error('videos persistUploadedVideo', { provider, error: err.message });
+      response.internalError(res, err.message || '上传失败');
+    }
+  };
+
   return {
     list: (req, res) => {
       try {
@@ -122,65 +182,58 @@ function routes(db, log) {
         response.internalError(res, err.message);
       }
     },
-    /** 手动上传视频替换分镜视频：保存文件 → 写入 video_generations(completed) → 回写 storyboard.video_url/local_path */
-    uploadManual: (req, res) => {
+    /** 手动上传视频替换分镜视频 */
+    uploadManual: (req, res) => persistUploadedVideo(req, res, { provider: 'manual', prompt: req.body?.prompt || '手动上传视频' }),
+    /** 签发插件上传凭证：{ storyboard_id } → { storyboard_id, ts, nonce, sign, expires_in } */
+    extensionCredential: (req, res) => {
       try {
-        if (!req.file || !req.file.buffer) {
-          return response.badRequest(res, '请选择视频文件');
-        }
         const storyboardId = req.body?.storyboard_id != null ? Number(req.body.storyboard_id) : 0;
         if (!storyboardId || storyboardId <= 0) {
           return response.badRequest(res, 'storyboard_id 必填');
         }
-        const sbRow = db.prepare('SELECT id, episode_id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(storyboardId);
+        const sbRow = db.prepare('SELECT id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(storyboardId);
         if (!sbRow) {
           return response.notFound(res, '分镜不存在');
         }
-        // storyboards 没有 drama_id，需通过 episode 关联获取
-        let dramaId = 0;
-        try {
-          const ep = db.prepare('SELECT drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL').get(sbRow.episode_id);
-          dramaId = ep?.drama_id || 0;
-        } catch (_) {}
-        const loadConfig = require('../config').loadConfig;
-        const cfg = loadConfig();
-        const rawStorage = cfg?.storage?.local_path || './data/storage';
-        const storagePath = path.isAbsolute(rawStorage) ? rawStorage : path.join(process.cwd(), rawStorage);
-        const baseUrl = (cfg?.storage?.base_url || '').replace(/\/$/, '');
-        const projectSubdir = dramaId ? storageLayout.getProjectStorageSubdir(db, dramaId) : null;
-        const result = uploadService.uploadFile(
-          storagePath,
-          baseUrl,
-          log,
-          req.file.buffer,
-          req.file.originalname || 'video.mp4',
-          req.file.mimetype,
-          'videos',
-          projectSubdir
-        );
-        const now = new Date().toISOString();
-        const provider = 'manual';
-        const prompt = req.body?.prompt || '手动上传视频';
-        // 写入一条已完成的 video_generations 记录，便于前端「历史视频」切换
-        db.prepare(
-          `INSERT INTO video_generations
-            (drama_id, storyboard_id, provider, prompt, video_url, local_path, status, completed_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`
-        ).run(dramaId, storyboardId, provider, prompt, result.url || null, result.local_path, now, now, now);
-        const videoGenId = db.prepare('SELECT last_insert_rowid() as id').get().id;
-        // 回写分镜主视频地址，合成视频时直接采用
-        try {
-          db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
-            .run(result.url || null, result.local_path, now, storyboardId);
-        } catch (_) {}
-        const item = videoService.getById(db, videoGenId);
-        log.info('Manual video uploaded for storyboard', { storyboard_id: storyboardId, video_gen_id: videoGenId, local_path: result.local_path });
-        response.created(res, item || { id: videoGenId, status: 'completed', video_url: result.url, local_path: result.local_path });
+        const cred = extensionAuth.issueCredential(loadConfig(), storyboardId);
+        if (!cred.ok) {
+          return response.internalError(res, cred.reason || '凭证签发失败');
+        }
+        response.success(res, {
+          storyboard_id: storyboardId,
+          ts: cred.ts,
+          nonce: cred.nonce,
+          sign: cred.sign,
+          expires_in: cred.expires_in,
+        });
       } catch (err) {
-        log.error('videos uploadManual', { error: err.message });
-        response.internalError(res, err.message || '上传失败');
+        log.error('videos extensionCredential', { error: err.message });
+        response.internalError(res, err.message);
       }
     },
+    /** 插件上传签名校验（须在 multer 之前执行，避免非法请求占用内存/落盘） */
+    verifyExtensionUpload: (req, res, next) => {
+      try {
+        const h = req.headers || {};
+        const q = req.query || {};
+        const storyboardId = h['x-lmd-storyboard-id'] ?? q.storyboard_id;
+        const ts = h['x-lmd-ts'] ?? q.ts;
+        const nonce = h['x-lmd-nonce'] ?? q.nonce;
+        const sign = h['x-lmd-sign'] ?? q.sign;
+        const result = extensionAuth.verifyCredential(loadConfig(), { storyboardId, ts, nonce, sign });
+        if (!result.ok) {
+          log.warn('extension upload rejected', { storyboard_id: storyboardId, reason: result.reason });
+          return response.forbidden(res, `签名校验失败：${result.reason}`);
+        }
+        req.extensionUpload = { storyboardId: Number(storyboardId) };
+        next();
+      } catch (err) {
+        log.error('videos verifyExtensionUpload', { error: err.message });
+        response.forbidden(res, '签名校验异常');
+      }
+    },
+    /** 插件生成视频上传：签名校验通过后保存并关联分镜主视频 */
+    uploadExtension: (req, res) => persistUploadedVideo(req, res, { provider: 'extension', prompt: '插件生成视频' }),
     episodeBatch: (req, res) => {
       try {
         response.success(res, []);
