@@ -232,8 +232,19 @@ async function startBackend() {
   }
 
   const { createApp } = require(path.join(backendModulePath, 'src', 'app.js'));
+  const { pathToFileURL } = require('url');
   const { createServer } = require('http');
-  const { app: expressApp, config } = createApp();
+  const { app: expressApp, config, db } = createApp();
+  try {
+    const logger = require(path.join(backendModulePath, 'src', 'logger.js'));
+    const { initAgent } = await import(pathToFileURL(path.join(backendModulePath, 'src', 'mastra', 'index.mjs')).href);
+    const dataDir = path.resolve(backendCwd, path.dirname(config.database.path));
+    await initAgent({ db, log: logger, config, dataDir });
+  } catch (err) {
+    const detail = err && err.stack ? err.stack : (err && err.message ? err.message : err);
+    writeMainLog(`助手未就绪 ${detail}`);
+    console.warn('助手未就绪', err && err.message ? err.message : err);
+  }
   const preferredPort = config.server?.port || DEFAULT_PORT;
 
   // 自动探测空闲端口：优先默认端口，被占时由 OS 分配，支持多实例同时运行

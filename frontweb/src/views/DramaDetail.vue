@@ -524,13 +524,14 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, VideoPlay, Plus, Delete, Sunny, Moon, PictureFilled, Grid } from '@element-plus/icons-vue'
 import EpisodeBatchImportDialog from '@/components/EpisodeBatchImportDialog.vue'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import { useTheme } from '@/composables/useTheme'
+import { useAgentContext } from '@/stores/agentContext'
 import { dramaAPI } from '@/api/drama'
 import { characterLibraryAPI } from '@/api/characterLibrary'
 import { sceneLibraryAPI } from '@/api/sceneLibrary'
@@ -873,6 +874,7 @@ async function loadDrama() {
     d = await backfillDramaStylePromptMetadataIfNeeded(dramaAPI, dramaId, d)
     drama.value = d
     episodes.value = d.episodes || []
+    useAgentContext().setEpisodes(episodes.value)
     infoForm.title = d.title || ''
     infoForm.description = d.description || ''
     infoForm.genre = d.genre || ''
@@ -1182,7 +1184,15 @@ watch(activeResTab, (tab) => {
   else if (tab === 'lib-prop') loadPropList()
 })
 
+function onAgentChanged(event) {
+  if (Number(event.detail?.dramaId) !== dramaId) return
+  loadDrama()
+  loadCharList()
+  loadSceneList()
+}
+
 onMounted(() => {
+  window.addEventListener('lmd-agent-changed', onAgentChanged)
   loadDrama()
   loadCharList()
   if (route.query.importBatch) {
@@ -1190,6 +1200,11 @@ onMounted(() => {
       episodeBatchImportDialogRef.value?.openDialog?.()
     }, 0)
   }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('lmd-agent-changed', onAgentChanged)
+  useAgentContext().clear()
 })
 </script>
 

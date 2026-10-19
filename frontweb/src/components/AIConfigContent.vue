@@ -395,7 +395,7 @@
                 <div class="ph-body">
                   <b>Endpoint：</b><code>POST /api/v3/images/generations</code><br>
                   <b>Base URL：</b><code>https://ark.cn-beijing.volces.com/api/v3</code><br>
-                  <pre>{ "model": "doubao-seedream-4-5-251128", "prompt": "...", "size": "1024x1024" }</pre>
+                  <pre>{ "model": "doubao-seedream-5-0-flash-260915", "prompt": "...", "size": "1024x1024" }</pre>
                 </div>
               </el-collapse-item>
               <el-collapse-item name="dashscope-img">
@@ -475,7 +475,7 @@ input_reference = (图片文件，可选)</pre>
                 <div class="ph-body">
                   <b>Endpoint：</b><code>POST …/contents/generations/tasks</code>（与后端一致）<br>
                   <b>Base URL：</b><code>https://ark.cn-beijing.volces.com/api/v3</code><br>
-                  <pre>{ "model": "doubao-seedance-1-5-pro-251215",
+                  <pre>{ "model": "doubao-seedance-2-0-fast-260128",
   "content": [{ "type": "text", "text": "..." }],
   "ratio": "9:16", "duration": 5,
   "watermark": false, "resolution": "720p" }</pre>
@@ -966,7 +966,7 @@ input_reference = (图片文件，可选)</pre>
           <ul class="one-key-list">
             <li><b>文本/对话</b>：通义千问（qwen-plus）— 生成故事剧本</li>
             <li><b>文本生成图片</b>：通义万象（wan2.6-image）— 角色/场景/道具图</li>
-            <li><b>文本生成图片</b>：通义千问图像（qwen-image-max）— 角色/场景图备选</li>
+            <li><b>文本生成图片</b>：通义千问图像（qwen-image-3.0，备选，不设为默认）— 角色/场景图</li>
             <li><b>分镜图片生成</b>：通义万象（wan2.6-image）— 支持角色参考图</li>
             <li><b>视频生成</b>：通义万相（wan2.2-kf2v-flash）— 生成视频片段</li>
           </ul>
@@ -1013,10 +1013,10 @@ input_reference = (图片文件，可选)</pre>
         <div class="one-key-section">
           <div class="one-key-section-title">📋 将自动创建以下配置</div>
           <ul class="one-key-list">
-            <li><b>文本/对话</b>：DeepSeek V3（deepseek-v3-2-251201）— 生成故事剧本</li>
-            <li><b>文本生成图片</b>：即梦 4.5（doubao-seedream-4-5-251128）— 角色/场景/道具图</li>
-            <li><b>分镜图片生成</b>：即梦 4.5（doubao-seedream-4-5-251128）— 支持角色参考图</li>
-            <li><b>视频生成</b>：即梦 Seedance 1.5 Pro — 生成视频片段</li>
+            <li><b>文本/对话</b>：DeepSeek V4 Flash（deepseek-v4-flash-ga-260731）— 生成故事剧本</li>
+            <li><b>文本生成图片</b>：即梦 5.0 Flash（doubao-seedream-5-0-flash-260915）— 角色/场景/道具图</li>
+            <li><b>分镜图片生成</b>：即梦 5.0 Flash（doubao-seedream-5-0-flash-260915）— 支持角色参考图</li>
+            <li><b>视频生成</b>：即梦 Seedance 2.0 Fast — 生成视频片段</li>
           </ul>
         </div>
         <div class="one-key-section">
@@ -1028,7 +1028,7 @@ input_reference = (图片文件，可选)</pre>
             <li>复制生成的 Key 填入下方</li>
           </ol>
           <p class="one-key-note">💡 方舟平台一个 Key 同时支持豆包文本、即梦图片与视频等所有服务</p>
-          <p class="one-key-note">⚠️ 视频生成需在控制台「开通」对应模型（即梦 Seedance）后方可使用</p>
+          <p class="one-key-note">⚠️ 图片、视频需在控制台开通对应模型（即梦 5.0、Seedance 2.0）后方可使用</p>
         </div>
       </div>
       <el-form label-width="0" style="margin-top: 8px">
@@ -1398,27 +1398,27 @@ const oneKeyAgnesSaving = ref(false)
 const providerConfigs = {
   text: [
     { id: 'openai', name: 'OpenAI', models: ['gpt-4o', 'gpt-4', 'gpt-3.5-turbo'] },
-    { id: 'volcengine', name: '火山引擎', models: ['deepseek-v3-2-251201', 'doubao-1-5-pro-32k-250115', 'kimi-k2-thinking-251104'] },
+    { id: 'volcengine', name: '火山引擎', models: ['deepseek-v4-flash-ga-260731', 'deepseek-v4-1-flash-260910', 'doubao-seed-2-1-lite-260915'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['gemini-3-flash-preview', 'claude-sonnet-4-5-20250929', 'doubao-seed-1-8-251228'] },
     { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-pro', 'gemini-3-flash-preview'] },
     { id: 'deepseek', name: 'DeepSeek', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
-    { id: 'qwen', name: '通义千问', models: ['qwen3-max', 'qwen-plus', 'qwen-flash'] },
+    { id: 'qwen', name: '通义千问', models: ['qwen-plus', 'qwen3.6-plus', 'qwen-flash'] },
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-3.0-flash', 'agnes-2.5-flash', 'agnes-2.5-pro', 'agnes-2.0-flash'] }
   ],
   image: [
-    { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
+    { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-5-0-flash-260915', 'doubao-seedream-5-0-pro-260628', 'doubao-seedream-4-5-251128'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['nano-banana-pro', 'doubao-seedream-4-5-251128', 'qwen-image'] },
     { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'] },
     { id: 'openai', name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
-    { id: 'qwen_image', name: '通义千问', models: ['qwen-image-max', 'qwen-image-plus', 'qwen-image'] },
+    { id: 'qwen_image', name: '通义千问', models: ['qwen-image-3.0', 'qwen-image-3.0-pro'] },
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.5-flash', 'agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   storyboard_image: [
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
-    { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
+    { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-5-0-flash-260915', 'doubao-seedream-5-0-pro-260628', 'doubao-seedream-4-5-251128'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['nano-banana-pro', 'doubao-seedream-4-5-251128', 'qwen-image'] },
@@ -1436,7 +1436,7 @@ const providerConfigs = {
     { id: 'ffir', name: '飞儿API / 可灵 Omni-Video (ffir.cn)', models: ['kling-video-o1', 'kling-v3-omni'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-omni-video', 'kling-video', 'kling-motion-control'] },
     { id: 'vidu', name: 'Vidu', models: ['viduq2', 'viduq2-pro', 'viduq2-turbo', 'viduq3-pro'] },
-    { id: 'volces', name: '火山引擎', models: ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-lite-i2v-250428', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015'] },
+    { id: 'volces', name: '火山引擎', models: ['doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-lite-i2v-250428', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015', 'sora-2', 'sora-2-pro'] },
     { id: 'minimax_h3', name: 'MiniMax H3', models: ['MiniMax-H3'] },
     { id: 'minimax', name: 'MiniMax 海螺', models: ['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3-Fast', 'MiniMax-Hailuo-02'] },
@@ -1798,7 +1798,7 @@ function onProviderChange(providerId) {
 const TONGYI_CONFIGS = [
   { service_type: 'text', name: '通义千问', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', provider: 'qwen', model: ['qwen-plus'] },
   { service_type: 'image', name: '通义万象 文本生图', base_url: 'https://dashscope.aliyuncs.com', provider: 'dashscope', model: ['wan2.6-image'] },
-  { service_type: 'image', name: '通义千问 文本生图', base_url: 'https://dashscope.aliyuncs.com', provider: 'qwen_image', model: ['qwen-image-max', 'qwen-image-plus', 'qwen-image'] },
+  { service_type: 'image', name: '通义千问 文本生图', base_url: 'https://dashscope.aliyuncs.com', provider: 'qwen_image', model: ['qwen-image-3.0', 'qwen-image-3.0-pro'], is_default: false },
   { service_type: 'storyboard_image', name: '通义万象 分镜图', base_url: 'https://dashscope.aliyuncs.com', provider: 'dashscope', model: ['wan2.6-image'] },
   { service_type: 'video', name: '通义万相', base_url: 'https://dashscope.aliyuncs.com', provider: 'dashscope', model: ['wan2.2-kf2v-flash'] }
 ]
@@ -1820,10 +1820,10 @@ const CHEAP_SEEDANCE2_CONFIGS = [
 
 /** 火山引擎一键配置用 */
 const VOLCENGINE_CONFIGS = [
-  { service_type: 'text', name: '火山引擎 文本', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volcengine', model: ['deepseek-v3-2-251201', 'doubao-1-5-pro-32k-250115', 'kimi-k2-thinking-251104'] },
-  { service_type: 'image', name: '火山引擎 即梦 文本生图', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volcengine', model: ['doubao-seedream-4-5-251128'] },
-  { service_type: 'storyboard_image', name: '火山引擎 即梦 分镜图', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volcengine', model: ['doubao-seedream-4-5-251128'] },
-  { service_type: 'video', name: '火山引擎 即梦 视频', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volces', model: ['doubao-seedance-1-5-pro-251215'] }
+  { service_type: 'text', name: '火山引擎 文本', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volcengine', model: ['deepseek-v4-flash-ga-260731', 'doubao-seed-2-1-lite-260915'] },
+  { service_type: 'image', name: '火山引擎 即梦 文本生图', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volcengine', model: ['doubao-seedream-5-0-flash-260915', 'doubao-seedream-5-0-pro-260628'] },
+  { service_type: 'storyboard_image', name: '火山引擎 即梦 分镜图', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volcengine', model: ['doubao-seedream-5-0-flash-260915', 'doubao-seedream-5-0-pro-260628'] },
+  { service_type: 'video', name: '火山引擎 即梦 视频', base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volces', model: ['doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128'] }
 ]
 
 /** Agnes 一键配置用（默认最新模型） */
@@ -2205,7 +2205,7 @@ async function submitOneKeyTongyi() {
         model: models,
         default_model: models[0] || null,
         priority: 10,
-        is_default: true
+        is_default: cfg.is_default !== false
       })
     }
     ElMessage.success('已创建通义文本、文本生图、分镜图、视频配置')

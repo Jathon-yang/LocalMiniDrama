@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const aiConfigService = require('./aiConfigService');
+const { flattenModelIds, pickModelId, ARK_RETIRED_VIDEO_MODELS } = require('./modelId');
 let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
@@ -630,7 +631,7 @@ async function callVolcengineOmniVideoApi(config, log, opts) {
 
   const url = buildVideoUrl(config);
   const model = getModelFromConfig(config, preferredModel);
-  const finalModel = normalizeVolcModel(model);
+  const finalModel = normalizeVolcModel(model, config);
   const ratio = aspect_ratio || '16:9';
   const effectiveDuration = normalizeVolcOmniDuration(finalModel, duration);
 
@@ -1173,15 +1174,24 @@ const VOLC_MODEL_ALIASES = {
   'doubao-seedance-2-0-fast':      'doubao-seedance-2-0-fast-260128',
 };
 
-function normalizeVolcModel(name) {
-  if (!name) return name;
-  return VOLC_MODEL_ALIASES[name.toLowerCase()] || name;
+function isOfficialArkVideoConfig(config) {
+  return String(config?.base_url || '').toLowerCase().includes('volces.com');
+}
+
+function normalizeVolcModel(name, config) {
+  const id = pickModelId(name);
+  if (!id) return name;
+  const aliased = VOLC_MODEL_ALIASES[id.toLowerCase()] || id;
+  if (!isOfficialArkVideoConfig(config)) return aliased;
+  return ARK_RETIRED_VIDEO_MODELS[String(aliased).toLowerCase()] || aliased;
 }
 
 function getModelFromConfig(config, preferredModel) {
-  const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
-  if (preferredModel && models.includes(preferredModel)) return preferredModel;
-  if (config.default_model && models.includes(config.default_model)) return config.default_model;
+  const models = flattenModelIds(config?.model);
+  const preferred = pickModelId(preferredModel);
+  const fallback = pickModelId(config?.default_model);
+  if (preferred && models.includes(preferred)) return preferred;
+  if (fallback && models.includes(fallback)) return fallback;
   return models[0] || '';
 }
 
@@ -4114,7 +4124,7 @@ async function callVideoApi(db, log, opts) {
   if (!config) {
     throw new Error('???????????AI ?????? video ?????????');
   }
-  const model = getModelFromConfig(config, preferredModel);
+  const model = normalizeVolcModel(getModelFromConfig(config, preferredModel), config);
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config, preferredModel);
   if (db && opts.drama_id && VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME.has(protocol)) {
@@ -4384,7 +4394,7 @@ async function callVideoApi(db, log, opts) {
 
   const isVolc = protocol === 'volcengine';
   // ???? model ???????????? API ?? ID?
-  const finalModel = isVolc ? normalizeVolcModel(model) : model;
+  const finalModel = isVolc ? normalizeVolcModel(model, config) : model;
 
   // ========== 首尾帧支持（完善版） ==========
   // 优先使用显式传入的 first_frame_url / last_frame_url（首尾帧模式核心）
@@ -4963,6 +4973,7 @@ module.exports = {
   buildVideoUrl,
   buildQueryUrl,
   normalizeAspectRatioForApi,
+  normalizeVolcModel,
   isPlausibleHttpVideoUrl,
   pickProxyVideoUrl,
   extractAgnesVideoUrl,

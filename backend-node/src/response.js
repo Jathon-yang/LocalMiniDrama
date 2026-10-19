@@ -49,6 +49,10 @@ function internalError(res, message) {
   error(res, 500, 'INTERNAL_ERROR', message || '服务器错误');
 }
 
+function serviceUnavailable(res, message) {
+  error(res, 503, 'SERVICE_UNAVAILABLE', message || '助手未就绪');
+}
+
 module.exports = {
   success,
   created,
@@ -58,4 +62,5 @@ module.exports = {
   notFound,
   forbidden,
   internalError,
+  serviceUnavailable,
 };

@@ -6,7 +6,7 @@
 
 *LocalMiniDrama · AI-powered short drama creator*
 
-[![version](https://img.shields.io/badge/version-1.2.8-blue?style=flat-square)](https://github.com/xuanyustudio/LocalMiniDrama/releases)
+[![version](https://img.shields.io/badge/version-1.2.9-blue?style=flat-square)](https://github.com/xuanyustudio/LocalMiniDrama/releases)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](#-快速开始)
 [![stack](https://img.shields.io/badge/Vue3%20%2B%20Node.js%20%2B%20Electron-informational?style=flat-square)](#-项目架构)
@@ -40,13 +40,11 @@
 
 ---
 
-## 📌 最新动态（v1.2.8）
+## 📌 最新动态（v1.2.9）
 
-- 🆕 **Agnes AI 接入**：文本 / 图片 / 视频一键配置，一个 Key 覆盖全流程
-- 🆕 **画布模式增强**：剧本节点、右键菜单、浮动工具栏、画布内新建/删除/整集生成
-- 🆕 **ModelArk 私有资产库**：SD2 角色认证对接火山方舟资产组，AK/SK 与 Bearer 双鉴权
-- 🔧 **图床可配置**：`upload_url` / 超时（默认 180s）/ 重试次数写入 `config.yaml`；缓存 URL 失效自动重传
-- 🔧 **提示词优化** · **分镜图片数量上限修复**
+- 🆕 **剧内助手**：剧集页、制作页、画布页可对话操作当前短剧（剧本、角色、场景、分镜、出图）；删除需确认
+- 🔧 **文本模型**：配置里存了多个模型时，助手使用默认的那一个，不再把整段名单当作模型名
+- 🔧 **桌面运行时**：Electron 升到 44，以便在安装包内运行助手
 
 完整记录 → **[CHANGELOG.md](CHANGELOG.md)**
 

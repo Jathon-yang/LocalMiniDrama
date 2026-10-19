@@ -1,6 +1,7 @@
 // 与 Go pkg/ai + application/services/ai_service 对齐：读取 ai_service_configs，调用 OpenAI 兼容的 chat completions
 const aiConfigService = require('./aiConfigService');
 const { applyDeepSeekChatOptions } = require('./deepseekConfig');
+const { flattenModelIds, pickModelId, remapArkModelId } = require('./modelId');
 const https = require('https');
 const http = require('http');
 
@@ -218,8 +219,8 @@ function getConfigForModel(db, serviceType, modelName) {
   const configs = aiConfigService.listConfigs(db, serviceType);
   for (const config of configs) {
     if (!config.is_active) continue;
-    const models = Array.isArray(config.model) ? config.model : [config.model];
-    if (models.includes(modelName)) return config;
+    const models = flattenModelIds(config.model);
+    if (models.includes(modelName) || models.includes(remapArkModelId(config.base_url, modelName))) return config;
   }
   return null;
 }
@@ -231,11 +232,46 @@ function buildChatUrl(config) {
   return base + ep;
 }
 
+function isOfficialArkConfig(config) {
+  return String(config?.base_url || '').toLowerCase().includes('volces.com');
+}
+
+/** 方舟已下线的文本模型，仅在官方 ark 地址上替换，避免改到仍提供旧 ID 的中转站。 */
+function resolveArkTextModel(config, model) {
+  const id = pickModelId(model);
+  if (!id) return model;
+  return remapArkModelId(config?.base_url, id);
+}
+
+/**
+ * 方舟 DeepSeek V4 / Seed 2.x 默认开启深度思考，剧本生成会变慢且容易吃掉输出额度。
+ * 未显式指定 thinking 时关闭。
+ */
+function applyVolcChatOptions(config, body) {
+  if (!body || typeof body !== 'object') return body;
+  const model = resolveArkTextModel(config, body.model);
+  if (!isOfficialArkConfig(config)) {
+    return model === body.model ? body : { ...body, model };
+  }
+  const next = { ...body, model };
+  const name = String(next.model || '').toLowerCase();
+  if (!next.thinking && (/^deepseek-v4/.test(name) || /^doubao-seed-2/.test(name))) {
+    next.thinking = { type: 'disabled' };
+  }
+  return next;
+}
+
 function getModelFromConfig(config, preferredModel) {
-  const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
-  if (preferredModel && models.includes(preferredModel)) return preferredModel;
-  if (config.default_model && models.includes(config.default_model)) return config.default_model;
-  return models[0] || 'gpt-3.5-turbo';
+  const models = flattenModelIds(config?.model);
+  const preferred = pickModelId(preferredModel);
+  const fallback = pickModelId(config?.default_model);
+  let picked = models[0] || 'gpt-3.5-turbo';
+  if (preferred && (models.includes(preferred) || models.includes(remapArkModelId(config?.base_url, preferred)))) {
+    picked = remapArkModelId(config?.base_url, preferred);
+  } else if (fallback && models.includes(fallback)) {
+    picked = fallback;
+  }
+  return resolveArkTextModel(config, picked);
 }
 
 /**
@@ -417,7 +453,7 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     ...(finalMaxTokens != null ? { max_tokens: finalMaxTokens } : {}),
     ...(json_mode ? { response_format: { type: 'json_object' } } : {}),
   };
-  body = applyDeepSeekChatOptions(config, body);
+  body = applyVolcChatOptions(config, applyDeepSeekChatOptions(config, body));
   const startMs = Date.now();
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
   const onProgress = (receivedLen, event, accumulated) => {
@@ -523,7 +559,7 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     ...(finalMaxTokens != null ? { max_tokens: finalMaxTokens } : {}),
     ...(json_mode ? { response_format: { type: 'json_object' } } : {}),
   };
-  body = applyDeepSeekChatOptions(config, body);
+  body = applyVolcChatOptions(config, applyDeepSeekChatOptions(config, body));
   const silenceMs = options.silence_timeout_ms != null ? Number(options.silence_timeout_ms) : 120000;
   const startMs = Date.now();
   log.info('AI streamGenerateText request', {
@@ -684,12 +720,13 @@ async function generateTextWithVision(db, log, serviceType, userPrompt, systemPr
     // 推理模型不支持 temperature，跳过
     ...(isReasoningModel ? {} : { temperature: Number(temperature) }),
   };
+  const requestBody = applyVolcChatOptions(config, body);
 
   const startMs = Date.now();
   let res;
   try {
     // 使用非流式请求：视觉分析响应短，且流式对推理模型（o1/o3/o4）和部分代理兼容性差
-    res = await postJSONNonStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 120000);
+    res = await postJSONNonStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, requestBody, 120000);
   } catch (httpErr) {
     log.error('[Vision] HTTP 请求失败', { model, url: url.slice(0, 80), error: httpErr.message });
     throw httpErr;
@@ -807,6 +844,8 @@ module.exports = {
   postJSONWithTimeout,
   isMaxTokensParamError,
   parseMaxTokensLimitFromError,
+  resolveArkTextModel,
+  applyVolcChatOptions,
   clampMaxTokensInBody,
   stripMaxTokensFromBody,
 };
