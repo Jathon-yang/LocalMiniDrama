@@ -8,6 +8,7 @@ const storageLayout = require('./storageLayout');
 const taskService = require('./taskService');
 const { loadConfig } = require('../config');
 const { postJSONWithTimeout } = require('./aiClient');
+const { flattenModelIds, pickModelId } = require('./modelId');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
@@ -142,11 +143,31 @@ function buildImageUrl(config) {
   return base + ep;
 }
 
+const RETIRED_QWEN_IMAGE_MODELS = {
+  'qwen-image-max': 'qwen-image-3.0',
+  'qwen-image-plus': 'qwen-image-3.0',
+  'qwen-image': 'qwen-image-3.0',
+};
+
+function isDashScopeImageConfig(config) {
+  return String(config?.base_url || '').toLowerCase().includes('dashscope.aliyuncs.com');
+}
+
+/** qwen-image / qwen-image-plus / qwen-image-max 已于 2026-10-10 下线。仅官方百炼地址替换。 */
+function resolveDashScopeImageModel(config, model) {
+  const id = pickModelId(model);
+  if (!id || !isDashScopeImageConfig(config)) return id || model;
+  return RETIRED_QWEN_IMAGE_MODELS[id.toLowerCase()] || id;
+}
+
 function getModelFromConfig(config, preferredModel) {
-  const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
-  if (preferredModel && models.includes(preferredModel)) return preferredModel;
-  if (config.default_model && models.includes(config.default_model)) return config.default_model;
-  return models[0] || 'dall-e-3';
+  const models = flattenModelIds(config?.model);
+  const preferred = pickModelId(preferredModel);
+  const fallback = pickModelId(config?.default_model);
+  let picked = models[0] || 'dall-e-3';
+  if (preferred && models.includes(preferred)) picked = preferred;
+  else if (fallback && models.includes(fallback)) picked = fallback;
+  return resolveDashScopeImageModel(config, picked);
 }
 
 // 通义万象 size：格式 "宽*高"，总像素须在 589824(768*768)～1638400(1280*1280) 之间
@@ -883,7 +904,7 @@ async function callDashScopeImageApi(config, log, opts) {
     // 千问文生图：仅支持单条 text，长度不超过 800 字符；同步接口，无 stream/enable_interleave
     const text = (prompt || '').toString().trim().slice(0, 800);
     const body = {
-      model: model || 'qwen-image-max',
+      model: resolveDashScopeImageModel(config, model) || 'qwen-image-3.0',
       input: {
         messages: [{ role: 'user', content: [{ text }] }],
       },
@@ -1949,6 +1970,7 @@ module.exports = {
   fixAgnesImageSize,
   mapAgnesImageSizeSpec,
   isAgnesImageConfig,
+  resolveDashScopeImageModel,
   /** 图床 URL 缓存（image_proxy_cache），供 SD2 认证等复用 */
   getProxyCache,
   getProxyCacheValidated,
