@@ -27,3 +27,6 @@ frontweb-edu
 build_edu
 node_modules
 ohos_hap
+backend-node/package-lock.json
+backend-node/configs/config.yaml
+frontweb/vite.config.js
