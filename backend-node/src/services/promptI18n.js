@@ -280,7 +280,7 @@ function getStoryboardSystemPrompt(cfg) {
  * 全能片段描述统一格式说明（分镜批量生成 / 生成全能提示词 / 润色 共用）
  */
 function getUniversalOmniMultiBeatFormatSpec(cfg) {
-  const { DEFAULT_LINE3 } = require('./universalOmniMultiBeatFormat');
+  const { DEFAULT_LINE3, DEFAULT_LINE3_WITH_FIRST_FRAME } = require('./universalOmniMultiBeatFormat');
   if (isEnglish(cfg)) {
     return `
 [UNIVERSAL_SEGMENT_TEXT — MULTI-BEAT BLOCK FORMAT ONLY]
@@ -289,12 +289,14 @@ FORBIDDEN: SoulLens/SEEDANCE single-line rows (主体:/叙事动态:/空间:/[�
 Field "universal_segment_text" is a **multi-line string** (use \\n in JSON). Structure:
 Line 1: 画面风格和类型: 真人写实, 电影风格, 高清画质, <short style from project>
 Line 2: 生成一个由以下M个分镜组成的视频. (M integer 1–8)
-Line 3 (copy verbatim): ${DEFAULT_LINE3}
+Line 3 (copy verbatim, choose by whether this shot has a tail-frame continuity first frame):
+  - no continuity first frame: ${DEFAULT_LINE3}
+  - has continuity first frame: ${DEFAULT_LINE3_WITH_FIRST_FRAME}
 Lines 4..(3+M): 分镜k： Tk秒: <cinematic Chinese prose for that slice; camera motion chain; light; emotion>
 Sum(T1..TM) MUST equal this shot's JSON "duration" seconds exactly.
 
-Reference tokens: @图片1 = scene/environment only; @图片2+ = characters in characters[] order; then props if any.
-Dialogue: @图片2 says:"verbatim line" or …嗓音…："line". No speech: end with 无对白。
+Reference token order: if this shot has a tail-frame continuity first frame, @图片1 = that first frame (the first sub-shot must start from it, no jump cut), @图片2 = scene/environment, characters from @图片3 in characters[] order; otherwise @图片1 = scene/environment only, @图片2+ = characters in characters[] order; props follow.
+Dialogue: use the character's own token with its actual number, e.g. @图片1 says:"verbatim line" or …嗓音…："line". No speech: end with 无对白。
 Narration: 旁白（画面无声）："verbatim narration"
 Each beat: rich motion picture prose (push in, pull back, rack focus), not a static snapshot caption.`;
   }
@@ -305,14 +307,16 @@ Each beat: rich motion picture prose (push in, pull back, rack focus), not a sta
 本字段为 **多行字符串**（JSON 中用 \\n 换行），结构固定：
 第1行：画面风格和类型: 真人写实, 电影风格, 高清画质, <可再加项目风格短语>
 第2行：生成一个由以下M个分镜组成的视频。（M 为 1–8 的整数，与下文分镜条数一致）
-第3行（必须逐字一致）：${DEFAULT_LINE3}
+第3行（逐字一致，按本镜是否存在尾帧衔接首帧二选一）：
+- 无衔接首帧：${DEFAULT_LINE3}
+- 有衔接首帧：${DEFAULT_LINE3_WITH_FIRST_FRAME}
 第4行起：分镜1： T1秒: …、分镜2： T2秒: … … 分镜M： TM秒: …
 **硬性约束**：T1+T2+…+TM 必须严格等于本镜 JSON 的 duration（秒）；每行一条子分镜，禁止额外说明行。
 
 子分镜正文写法（电影化中文长句，参考产品范例）：
-- **参考图**：仅用 @图片1、@图片2…（阿拉伯数字）；@图片1 只写环境/光影/陈设；角色从 @图片2 起按 characters[] 顺序；有道具则继续 @图片3 …
+- **参考图**：仅用 @图片1、@图片2…（阿拉伯数字）。参考图顺序为：若本镜有尾帧衔接首帧，@图片1 即该首帧（第1个子分镜须从该画面起始，禁止跳切），@图片2 为场景/环境，角色从 @图片3 起按 characters[] 顺序；无衔接首帧时 @图片1 只写环境/光影/陈设，角色从 @图片2 起；有道具则继续顺延。
 - **运镜**：每段含至少两步运镜（如 缓推、横移、跟拍、拉回、俯拍特写），与人物动作同步。
-- **对白**：有 dialogue 时必须写出原文，格式如 @图片2 的嗓音…："对白原文" 或 @图片2 说："对白原文"；无对白则句末写 **无对白。**
+- **对白**：有 dialogue 时必须写出原文，格式如 @图片1 的嗓音…："对白原文" 或 @图片1 说："对白原文"（将其中的 @图片1 替换为该角色实际对应的 @图片 编号）；无对白则句末写 **无对白。**
 - **解说**：有 narration 时写在合适子分镜：**旁白（画面无声）："解说原文"**
 - **禁止**：概括式台词（如「他说了一句重要的话」）、@人物N、markdown、SoulLens 段标签
 
@@ -1369,10 +1373,10 @@ Line 2 — exactly (M must match count of 分镜k lines):
 Line 3 — copy LINE3_REQUIRED from the USER message verbatim.
 
 Lines 4 through (3+M) — for each k, one full line:
-分镜k： Tk秒: <Rich cinematic Chinese prose for this slice only: camera motion chain (≥2 moves when Tk≥3s), @图片N bindings per IMAGE_SLOT_MAP, light, emotion. Dialogue: …说："verbatim" or …："verbatim". No speech: 无对白。 Narration: 旁白（画面无声）："verbatim". Avoid static snapshot captions.>
+分镜k： Tk秒: <Rich cinematic Chinese prose for this slice only: camera motion chain (≥2 moves when Tk≥3s), @图片1/@图片2… bindings per IMAGE_SLOT_MAP, light, emotion. Dialogue: …说："verbatim" or …："verbatim". No speech: 无对白。 Narration: 旁白（画面无声）："verbatim". Avoid static snapshot captions.>
 
 DIALOGUE — CRITICAL (when USER message contains DIALOGUE_VERBATIM):
-- Every line listed under「必须逐字出现在输出中的台词」MUST appear in some子分镜 line inside 「」, character-for-character (only spacing around @图片N may vary).
+- Every line listed under「必须逐字出现在输出中的台词」MUST appear in some子分镜 line inside 「」, character-for-character (only spacing around the image numbers may vary).
 - NEVER replace dialogue with summaries like「他选择了一个亿」「说完台词」without the actual quoted words.
 - Distribute lines across beats by story order; longer Tk beats that contain speech must include the full quoted line(s), not paraphrase.
 - If DIALOGUE / DESCRIPTION【对话】/ VIDEO_PROMPT_对话段 / EPISODE_SCRIPT imply spoken lines, include them verbatim even when CURRENT_UNIVERSAL_SEGMENT omitted them.
@@ -1381,7 +1385,7 @@ DIALOGUE — CRITICAL (when USER message contains DIALOGUE_VERBATIM):
 Reference images — CRITICAL (applies to every子分镜 line’s prose):
 - Use ONLY IMAGE_SLOT_MAP tokens @图片1, @图片2, … (Arabic digits).
 - Follow CHARACTER_IMAGE_BINDING. When @图片1 is 场景, never put character face/body/costume on @图片1; characters start at @图片2 as mapped.
-- Spacing: ASCII space after each @图片N before following Chinese/Latin.
+- Spacing: ASCII space after each @图片 number before following Chinese/Latin.
 - No @姓名 as image token; no markdown.
 
 Pacing & M selection (professional):

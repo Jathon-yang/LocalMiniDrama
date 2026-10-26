@@ -86,6 +86,7 @@ function kindLabel(kind) {
   if (kind === 'scene') return '场景'
   if (kind === 'character') return '角色'
   if (kind === 'prop') return '物品'
+  if (kind === 'first_frame') return '首帧'
   return '参考'
 }
 
@@ -109,7 +110,7 @@ function makeDisplayAtToken(index) {
   const list = props.slots || []
   const dup = list.filter((x) => String(x.name || '').trim() === name).length > 1
   if (!dup) return `@${name}`
-  const prefix = slot.kind === 'scene' ? '场景' : slot.kind === 'prop' ? '物品' : '角色'
+  const prefix = slot.kind === 'scene' ? '场景' : slot.kind === 'prop' ? '物品' : slot.kind === 'first_frame' ? '首帧' : '角色'
   return `@${prefix}·${name}`
 }
 
@@ -671,6 +672,10 @@ html.light .omni-at-menu-thumb-wrap {
   background: rgba(245, 158, 11, 0.2);
   color: #fcd34d;
 }
+.omni-at-menu-tag--first_frame {
+  background: rgba(168, 85, 247, 0.2);
+  color: #d8b4fe;
+}
 html.light .omni-at-menu-tag {
   color: #475569;
   background: #e2e8f0;
@@ -686,6 +691,10 @@ html.light .omni-at-menu-tag--character {
 html.light .omni-at-menu-tag--prop {
   color: #92400e;
   background: #fef3c7;
+}
+html.light .omni-at-menu-tag--first_frame {
+  color: #6b21a8;
+  background: #f3e8ff;
 }
 .omni-at-menu-name {
   font-size: 12px;

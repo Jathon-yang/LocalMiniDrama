@@ -15,7 +15,7 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
       action, dialogue, narration, result, atmosphere,
       image_prompt, polished_prompt, video_prompt, universal_segment_text,
       shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field,
-      characters, local_path, duration, segment_index, segment_title
+      characters, local_path, duration, segment_index, segment_title, first_frame_image_id
      FROM storyboards WHERE id = ? AND deleted_at IS NULL`
   ).get(sbId);
   if (!sb) return { ok: false, code: 'not_found', message: '分镜不存在' };
@@ -201,14 +201,43 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
     }
   }
 
+  /**
+   * 尾帧衔接 / 上镜尾帧的首帧：前端会把它作为第一张参考图（@图片1）提交，并在提示词开头声明「以 @图片1 作为视频第一帧」。
+   * 此处槽位顺序须与前端 collectSbOmniReferenceAbsoluteUrls 完全一致：首帧 → 场景 → 角色 → 道具。
+   */
+  let contiguityFirstFrameRow = null;
+  if (sb.first_frame_image_id) {
+    try {
+      const fr = db
+        .prepare('SELECT provider, prompt, image_url, local_path, status FROM image_generations WHERE id = ?')
+        .get(sb.first_frame_image_id);
+      if (fr && String(fr.status || '') === 'completed' && hasMediaRef(fr)) {
+        const frProvider = String(fr.provider || '').trim();
+        const frPrompt = String(fr.prompt || '').trim();
+        if (frProvider === 'tail-frame' || frPrompt.startsWith('上镜尾帧')) contiguityFirstFrameRow = fr;
+      }
+    } catch (_) {}
+  }
+
   const slots = [];
-  const pushSlot = (kind, summary) => {
-    const num = slots.length + 1;
+  // 预定槽位：图片尚未生成时也按同样顺序给出固定编号，避免提示词里退化成「图片N」字面占位
+  const plannedSlots = [];
+  // 与前端一致：方舟多图参考上限 9 张，存在衔接首帧时基础槽位只保留 8 个，首帧固定占 @图片1
+  const maxSlots = contiguityFirstFrameRow ? 9 : 10;
+  const pushTo = (arr, kind, summary) => {
+    if (arr.length >= maxSlots) return;
+    const num = arr.length + 1;
     const brief = String(summary || '').trim() || kind;
-    slots.push({ num, tag: `@图片${num}`, kind, summary: brief });
+    arr.push({ num, tag: `@图片${num}`, kind, summary: brief });
   };
-  if (sceneRow && hasMediaRef(sceneRow)) {
-    pushSlot('场景', String(sceneRow.location || '').trim() || '场景环境');
+  if (contiguityFirstFrameRow) {
+    pushTo(slots, '首帧', '视频第一帧（尾帧衔接）');
+    pushTo(plannedSlots, '首帧', '视频第一帧（尾帧衔接）');
+  }
+  if (sceneRow) {
+    const sceneName = String(sceneRow.location || '').trim() || '场景环境';
+    if (hasMediaRef(sceneRow)) pushTo(slots, '场景', sceneName);
+    pushTo(plannedSlots, '场景', sceneName);
   }
   for (const ent of charOrderEntries) {
     let row = null;
@@ -221,65 +250,101 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
         .prepare('SELECT name, local_path, image_url FROM character_libraries WHERE id = ? AND deleted_at IS NULL')
         .get(Number(ent.key.slice(4)));
     }
-    if (!hasMediaRef(row)) continue;
-    const cn = String(row.name || ent.nameHint || '角色').trim();
-    pushSlot('角色', cn);
+    const cn = String(row?.name || ent.nameHint || '角色').trim();
+    if (hasMediaRef(row)) pushTo(slots, '角色', cn);
+    pushTo(plannedSlots, '角色', cn);
   }
   for (const pr of propRows) {
-    if (!hasMediaRef(pr)) continue;
-    pushSlot('道具', String(pr.name || '道具').trim());
+    const pn = String(pr.name || '道具').trim();
+    if (hasMediaRef(pr)) pushTo(slots, '道具', pn);
+    pushTo(plannedSlots, '道具', pn);
   }
 
+  const firstFrameSlot = slots.find((s) => s.kind === '首帧') || null;
+  const sceneSlot = slots.find((s) => s.kind === '场景') || null;
   const charSlots = slots.filter((s) => s.kind === '角色');
-  const sceneFirst = slots.length > 0 && slots[0].kind === '场景';
+  const plannedSceneSlot = plannedSlots.find((s) => s.kind === '场景') || null;
+  const plannedCharSlots = plannedSlots.filter((s) => s.kind === '角色');
+  const sceneTag = sceneSlot?.tag || '';
+  const firstFrameFirst = !!firstFrameSlot && slots[0]?.kind === '首帧';
   const charBindingBlock =
     charSlots.length > 0
       ? [
-          sceneFirst
-            ? 'CHARACTER_IMAGE_BINDING（@图片1 仅为场景/环境；人物从 @图片2 起依次对应下列姓名，勿把人绑在 @图片1）:'
-            : 'CHARACTER_IMAGE_BINDING（首张参考图非场景，以 IMAGE_SLOT_MAP 为准；人物与下列 @图片N 一一对应）:',
+          sceneSlot
+            ? `CHARACTER_IMAGE_BINDING（${sceneTag} 仅为场景/环境；人物从 ${charSlots[0].tag} 起依次对应下列姓名，勿把人绑在 ${sceneTag}${firstFrameSlot ? `；${firstFrameSlot.tag} 为视频第一帧，勿作人物参考` : ''}）:`
+            : firstFrameFirst
+              ? `CHARACTER_IMAGE_BINDING（${firstFrameSlot.tag} 为尾帧衔接首帧；人物与下列 @图片N 一一对应，勿把人绑在 ${firstFrameSlot.tag}）:`
+              : 'CHARACTER_IMAGE_BINDING（首张参考图非场景，以 IMAGE_SLOT_MAP 为准；人物与下列 @图片N 一一对应）:',
           ...charSlots.map((s) =>
-            sceneFirst
-              ? `「${s.summary}」→ ${s.tag}（外貌/动作绑定 ${s.tag} ，示例：${s.tag} 的侧脸；禁止「@图片1 中的${s.summary}」）`
+            sceneSlot
+              ? `「${s.summary}」→ ${s.tag}（外貌/动作绑定 ${s.tag} ，示例：${s.tag} 的侧脸；禁止「${sceneTag} 中的${s.summary}」）`
               : `「${s.summary}」→ ${s.tag}（外貌/动作绑定 ${s.tag} ，示例：${s.tag} 的侧脸）`
           ),
         ].join('\n')
-      : slots.length === 0 && forceWithoutReferenceImages
+      : plannedCharSlots.length > 0
+        ? [
+            'CHARACTER_IMAGE_BINDING（参考图尚未生成：按 IMAGE_SLOT_MAP 的预定编号绑定，补图后编号不变）:',
+            ...plannedCharSlots.map(
+              (s) => `「${s.summary}」→ ${s.tag}（外貌/动作绑定 ${s.tag}，勿绑定到其他编号）`
+            ),
+          ].join('\n')
+        : slots.length === 0 && forceWithoutReferenceImages
         ? [
             'CHARACTER_IMAGE_BINDING（无图强制模式）:',
             '- 尚无已解析的 @图片 槽位；ORDERED_CHARACTER_NAMES 仅用于剧情理解，禁止写成 @姓名 指代参考图。',
-            '- 若输出中出现 @图片N，仅表示与将来补图顺序对齐的占位，勿将具体外貌绑定到错误序号。',
+            '- 若确需预留参考图位，请从 @图片1 起按出场顺序编号，勿写「图片N」等字面占位。',
           ].join('\n')
         : [
-            'CHARACTER_IMAGE_BINDING: 当前无「角色」参考槽位；若出现人物且 @图片1 为场景，勿将人物外貌写在 @图片1。',
+            `CHARACTER_IMAGE_BINDING: 当前无「角色」参考槽位；若出现人物且 ${sceneTag || '@图片1'} 为${sceneTag ? '场景' : '参考图'}，勿将人物外貌写在 ${sceneTag || '@图片1'}。`,
           ].join('\n');
 
   if (slots.length === 0 && !forceWithoutReferenceImages) {
     return {
       ok: false,
       code: 'bad_request',
-      message: '请至少为场景、角色或道具上传一张参考图后再生成，以便对应 @图片1、@图片2 与 API 参考顺序一致',
+      message:
+        '请至少为场景、角色或道具上传一张参考图（或先完成尾帧衔接）后再生成，以便对应 @图片1、@图片2 与 API 参考顺序一致',
     };
   }
 
   let imageSlotMapBlock;
   let line3Required;
   if (slots.length === 0) {
-    imageSlotMapBlock = [
-      'IMAGE_SLOT_MAP（无图强制模式：尚无已上传场景/角色/道具参考图；视频 API 当前无实际参考图槽位。若正文仍写 @图片N，仅表示与将来补图顺序对齐的占位，出片前须核对）:',
-      '（解析结果：无已绑定图像的槽位 — 优先依据剧本与分镜字段写清运镜、节奏与情绪；可不使用 @图片N，或自 @图片1 起预留占位，勿编造与剧本矛盾的细节。）',
-    ].join('\n');
-    line3Required =
-      '当前尚未上传参考图；以剧本与分镜字段书写整段内的运镜与时间轴；若写 @图片N 仅为后续补图预留占位，勿将具体人脸绑定到尚未确定序号的图片；勿编造与剧本矛盾的情节。';
+    if (plannedSlots.length > 0) {
+      // 图片尚未生成：仍给出固定编号，模型不得写「图片N」字面占位
+      imageSlotMapBlock = [
+        'IMAGE_SLOT_MAP（参考图尚未生成：以下为本镜提交视频时的预定参考图顺序，编号已固定，补图后顺序不变；正文必须直接使用这些编号）:',
+        ...plannedSlots.map((s) => `${s.tag} = ${s.kind}「${s.summary}」（待补图）`),
+      ].join('\n');
+      if (plannedSceneSlot) {
+        line3Required = `环境、光影与陈设定性参考 ${plannedSceneSlot.tag}。若 ${plannedSceneSlot.tag} 为宫格或多画面拼图，禁止成片复刻其分格或并列布局，仅提取统一的室内空间与光线语义；须单镜头完整连续画面。`;
+      } else if (plannedSlots[0]?.kind === '首帧') {
+        line3Required = `本片段以 ${plannedSlots[0].tag}（尾帧衔接首帧）作为整段画面的起点，须自该画面连续起始，禁止跳切。`;
+      } else {
+        line3Required = `本片段以首张参考图 ${plannedSlots[0].tag} 作为画面锚点展开。`;
+      }
+    } else {
+      imageSlotMapBlock = [
+        'IMAGE_SLOT_MAP（无图强制模式：尚无已上传场景/角色/道具参考图；视频 API 当前无实际参考图槽位）:',
+        '（解析结果：无已绑定图像的槽位 — 优先依据剧本与分镜字段写清运镜、节奏与情绪；可不使用 @图片 占位；勿编造与剧本矛盾的细节。）',
+      ].join('\n');
+      line3Required =
+        '当前尚未上传参考图；以剧本与分镜字段书写整段内的运镜与时间轴；勿编造与剧本矛盾的情节。';
+    }
   } else {
     imageSlotMapBlock = [
       'IMAGE_SLOT_MAP（全能模式提交视频时参考图顺序；正文仅可使用下列占位符，与 API 一致）:',
       ...slots.map((s) => `${s.tag} = ${s.kind}「${s.summary}」`),
     ].join('\n');
-    line3Required =
-      slots[0].kind === '场景'
-        ? '环境、光影与陈设定性参考 @图片1。若 @图片1 为宫格或多画面拼图，禁止成片复刻其分格或并列布局，仅提取统一的室内空间与光线语义；须单镜头完整连续画面。'
-        : '本片段以首张参考图 @图片1 作为画面锚点展开。';
+    // 首帧槽位（若有）固定为 @图片1，场景/角色/物品依次后移
+    const anchorSlot = slots.find((s) => s.kind !== '首帧') || null;
+    if (sceneSlot) {
+      line3Required = `环境、光影与陈设定性参考 ${sceneTag}。若 ${sceneTag} 为宫格或多画面拼图，禁止成片复刻其分格或并列布局，仅提取统一的室内空间与光线语义；须单镜头完整连续画面。`;
+    } else if (anchorSlot) {
+      line3Required = `本片段以首张参考图 ${anchorSlot.tag} 作为画面锚点展开。`;
+    } else {
+      line3Required = `本片段以 ${firstFrameSlot?.tag || '@图片1'}（尾帧衔接首帧）作为整段画面的起点，须自该画面连续展开。`;
+    }
   }
 
   const charCount = charNamesOrdered.length;
@@ -318,19 +383,31 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
   const refContract = [
     'REFERENCE_RULE:',
     ...(slots.length === 0
-      ? [
-          '- 当前为无图强制模式：视频 API 尚无参考图；可不写 @图片N，若写则仅为补图前占位，出片前须与实际上传顺序一致。',
-          '- 禁止用 @场景、@姓名、@道具名 等形式指代参考图；将来有图时须一律改为 @图片N（与 MAP 一致）。',
-        ]
+      ? plannedSlots.length > 0
+        ? [
+            '- 参考图尚未生成：正文只可使用 IMAGE_SLOT_MAP 中列出的 @图片1、@图片2…（阿拉伯数字）固定编号作为占位，禁止写「@图片N」「图片N」等字面量。',
+            '- 禁止用 @场景、@姓名、@道具名 等形式指代参考图。',
+          ]
+        : [
+            '- 当前为无图强制模式：视频 API 尚无参考图；正文可不使用 @图片 占位。',
+            '- 禁止用 @场景、@姓名、@道具名 等形式指代参考图；将来有图时须一律改为 @图片1、@图片2…（与 MAP 一致）。',
+          ]
       : [
-          '- 绑定到某张参考图时，只能写 IMAGE_SLOT_MAP 里列出的 @图片N（阿拉伯数字，如 @图片1、@图片2）。',
+          '- 绑定到某张参考图时，只能写 IMAGE_SLOT_MAP 里列出的具体编号（阿拉伯数字，如 @图片1、@图片2），禁止写「@图片N」字面量。',
           '- 禁止用 @场景、@姓名、@林薇、@道具名 等形式指代参考图；需要指图时一律 @图片N。',
-          '- 若 @图片1 为「场景」：只写环境/光影/陈设；人物外貌与动作按 CHARACTER_IMAGE_BINDING 从 @图片2 起。若首张参考图即角色，则以 MAP 为准。',
+          sceneTag
+            ? `- ${sceneTag} 为「场景」：只写环境/光影/陈设；人物外貌与动作按 CHARACTER_IMAGE_BINDING 从 ${charSlots[0]?.tag || `${sceneTag} 之后`} 起。若首张参考图即角色，则以 MAP 为准。`
+            : '- 首张参考图非场景：只按 IMAGE_SLOT_MAP 绑定，勿把非场景图硬当作环境背景。',
           '- 场景参考若为四宫格/九宫格等拼图：见 SCENE_REFERENCE_LAYOUT；成片须单镜头连续画面，禁止模仿拼图布局。',
+          ...(firstFrameSlot
+            ? [
+                `- ${firstFrameSlot.tag} 为尾帧衔接首帧：第1个子分镜必须从该画面起始（禁止跳切），其余子分镜沿同一时间轴连续推进；该槽位不得挪作场景或人物参考。`,
+              ]
+            : []),
         ]),
-    '- 每个 @图片N 与后随的中/英文字之间保留一个半角空格（后处理也会修正，但模型应直接写对）。',
+    '- 每个 @图片 编号（如 @图片1）与后随的中/英文字之间保留一个半角空格（后处理也会修正，但模型应直接写对）。',
     '- ORDERED_CHARACTER_NAMES 仅供理解剧情，不得当作图占位符。',
-    `有图参考槽位数: ${slots.length}；绑定角色数(含无图): ${charCount}；绑定道具数(含无图): ${propCount}`,
+    `预定参考图槽位数: ${plannedSlots.length}；已上传参考图槽位数: ${slots.length}；绑定角色数(含无图): ${charCount}；绑定道具数(含无图): ${propCount}`,
   ].join('\n');
 
   const assetLine = `ORDERED_CHARACTER_NAMES（仅剧情理解）: ${charNames || 'none'}\nORDERED_PROP_NAMES: ${propNames.join(', ') || 'none'}`;
@@ -343,7 +420,7 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
   const sceneLayoutBlock = hasSceneSlot
     ? [
         'SCENE_REFERENCE_LAYOUT（场景参考图可能是多宫格/多视角拼图，仅作内容与空间参考，成片禁止模仿拼图）:',
-        '- 场景槽位（通常为 @图片1）常见为四宫格、九宫格或带分割线的多视角场景图：只提取家具、装修、色调、空间关系与光影，不要在提示中引导模型生成「分屏、宫格、多画面并列、复刻参考图网格」。',
+        `- 场景槽位（${sceneTag || '通常为 @图片1'}）常见为四宫格、九宫格或带分割线的多视角场景图：只提取家具、装修、色调、空间关系与光影，不要在提示中引导模型生成「分屏、宫格、多画面并列、复刻参考图网格」。`,
         '- 每一个「分镜k： Tk秒:」所在行的正文里都应点明：单镜头连续画幅、无成片宫格分屏；参考拼图仅用于理解空间与光线。',
       ].join('\n')
     : '';

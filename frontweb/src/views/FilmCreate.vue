@@ -853,6 +853,9 @@
           <el-checkbox v-model="storyboardUniversalOmni" @change="() => saveProjectSettings(false)">
             全能分镜模式（每镜输出多子分镜段落式 universal_segment_text，与「生成/润色全能提示词」同版式）
           </el-checkbox>
+          <el-checkbox v-model="storyboardTailFrameChain" @change="() => saveProjectSettings(false)">
+            尾帧衔接（同一幕内镜头串行生成，自动取上一镜尾帧作为下一镜首帧；不同幕仍并发生成）
+          </el-checkbox>
           <el-checkbox v-model="storyboardIncludeNarration" @change="() => saveProjectSettings(false)">
             生成分镜时生成解说旁白（narration，与对白分开，便于后期 TTS）
           </el-checkbox>
@@ -1210,7 +1213,7 @@
                     <el-tooltip placement="top" :show-after="280" :show-arrow="false" popper-class="sb-universal-tooltip-popper">
                       <template #content>
                         <div class="sb-universal-tooltip">
-                          全能生视频链路（<strong>AI 配置 · 视频</strong>：接口规范 <code>kling_omni</code> / <code>volcengine_omni</code>，或厂商「低价 Seedance2」，或勾选「确认支持全能模式」）：此处为提交主提示词；只要本框有内容，生视频时<strong>只</strong>发送这段，不会拼接下方「视频提示词」里的动作/对话/旁白。参考图顺序一般为：场景 → 角色（多张）→ 物品（<strong>不含</strong>经典分镜中间主图）；请用 <strong>@图片1</strong>、<strong>@图片2</strong>…（<strong>@图片N 后建议加半角空格</strong>）对应参考图，勿用 @姓名 指图；有场景图时 <strong>@图片1</strong> 只表环境，人物从 <strong>@图片2</strong> 起。若场景参考是<strong>四宫格/多视角拼图</strong>，仅借空间与氛围，须在文案中写明<strong>单镜头完整画幅、禁止分屏宫格</strong>，避免成片模仿拼图布局。全能提示词下拉中「生成」会按<strong>本条分镜总时长</strong>与本集剧本、镜序、邻镜信息，自动决定子分镜数 M（第2行「由以下M个分镜…」），第4行起为「分镜1：T1秒:」…多行，且各段秒数之和等于本镜时长；第3行仍为环境/参考图约束；「生成」与「润色」均为<strong>流式输出</strong>到本框；「润色」在此基础上增强。若本框留空，则退回仅用「视频提示词」。
+                          全能生视频链路（<strong>AI 配置 · 视频</strong>：接口规范 <code>kling_omni</code> / <code>volcengine_omni</code>，或厂商「低价 Seedance2」，或勾选「确认支持全能模式」）：此处为提交主提示词；只要本框有内容，生视频时<strong>只</strong>发送这段，不会拼接下方「视频提示词」里的动作/对话/旁白。参考图顺序为：首帧（若来自尾帧衔接 / 上镜尾帧）→ 场景 → 角色（多张）→ 物品（<strong>不含</strong>经典分镜中间主图）；衔接首帧会作为<strong>第一张参考图（@图片1）</strong>，其后的场景/角色/物品依次后移。请用 <strong>@图片1</strong>、<strong>@图片2</strong>…（<strong>@图片N 后建议加半角空格</strong>）对应参考图，勿用 @姓名 指图；无衔接首帧且有场景图时 <strong>@图片1</strong> 只表环境，人物从 <strong>@图片2</strong> 起。若场景参考是<strong>四宫格/多视角拼图</strong>，仅借空间与氛围，须在文案中写明<strong>单镜头完整画幅、禁止分屏宫格</strong>，避免成片模仿拼图布局。全能提示词下拉中「生成」会按<strong>本条分镜总时长</strong>与本集剧本、镜序、邻镜信息，自动决定子分镜数 M（第2行「由以下M个分镜…」），第4行起为「分镜1：T1秒:」…多行，且各段秒数之和等于本镜时长；第3行仍为环境/参考图约束；「生成」与「润色」均为<strong>流式输出</strong>到本框；「润色」在此基础上增强。若本框留空，则退回仅用「视频提示词」。
                         </div>
                       </template>
                       <el-icon class="sb-universal-hint-icon" tabindex="0" role="img" aria-label="片段说明">
@@ -1253,6 +1256,18 @@
                       </el-dropdown-menu>
                     </template>
                   </el-dropdown>
+                </div>
+                <div v-if="getSbContiguityFirstImage(sb)" class="sb-universal-first-frame">
+                  <img
+                    :src="assetImageUrl(getSbContiguityFirstImage(sb))"
+                    class="sb-universal-first-frame-img"
+                    alt=""
+                    @click="openImagePreview(assetImageUrl(getSbContiguityFirstImage(sb)))"
+                  />
+                  <div class="sb-universal-first-frame-meta">
+                    <span class="sb-universal-first-frame-title">首帧（尾帧衔接）</span>
+                    <span class="sb-universal-first-frame-note">提交时作为第一张参考图（@图片1），场景/角色/物品依次后移</span>
+                  </div>
                 </div>
                 <UniversalSegmentOmniAtEditor
                   v-if="!generatingUniversalSegmentIds.has(sb.id)"
@@ -3350,6 +3365,8 @@ const videoDuration = ref(null) // 视频总长度
 const storyboardIncludeNarration = ref(false)
 /** 分镜生成是否使用全能模式（universal_segment_text，对接 Seedance / 可灵 Omni） */
 const storyboardUniversalOmni = ref(false)
+/** 尾帧衔接：同一幕内镜头串行生成，生成后取尾帧作为同幕下一镜首帧 */
+const storyboardTailFrameChain = ref(false)
 const storyboardUseFirstLastFrame = ref(false)
 const exportingStoryboardSheet = ref(false)
 /** 生成尾帧时是否注入首帧作站位/构图参考（默认开启） */
@@ -4919,6 +4936,7 @@ async function loadDrama() {
     videoClipDuration.value = (d.metadata && d.metadata.video_clip_duration) ? Number(d.metadata.video_clip_duration) : 5
     storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
     storyboardUniversalOmni.value = !!(d.metadata && d.metadata.storyboard_universal_omni)
+    storyboardTailFrameChain.value = !!(d.metadata && d.metadata.storyboard_tail_frame_chain)
     storyboardUseFirstLastFrame.value = !!(d.metadata && d.metadata.storyboard_use_first_last_frame)
     lastFrameUseFirstLayoutLock.value = d.metadata?.last_frame_use_first_layout_lock !== false
     if (storyboardUseFirstLastFrame.value && gridMode.value !== 'single') {
@@ -5317,6 +5335,7 @@ async function saveProjectSettings(includeGenerationStyle = false) {
     video_clip_duration: videoClipDuration.value || 5,
     storyboard_include_narration: !!storyboardIncludeNarration.value,
     storyboard_universal_omni: !!storyboardUniversalOmni.value,
+    storyboard_tail_frame_chain: !!storyboardTailFrameChain.value,
     storyboard_use_first_last_frame: !!storyboardUseFirstLastFrame.value,
     last_frame_use_first_layout_lock: !!lastFrameUseFirstLayoutLock.value,
   }
@@ -6426,22 +6445,38 @@ function buildSbVideoPromptForApi(sb, { preferClassicPrompt = false } = {}) {
   const vp = (sb.video_prompt || '').toString().trim()
   const seg = sbUniversalSegmentTrimmed(sb)
   if (preferClassicPrompt) return vp || seg
-  if (isSbUniversalMode(sb.id)) {
-    if (seg) return seg
-    return vp
-  }
+  if (isSbUniversalMode(sb.id)) return seg || vp
   return vp
+}
+
+/**
+ * 全能模式：本镜首帧是否来自「尾帧衔接 / 上镜尾帧」。
+ * 这类首帧需要作为参考图提交，并在提示词里声明为视频第一帧。
+ */
+function getSbContiguityFirstImage(sb) {
+  if (!sb?.id) return null
+  const img = getSbFirstImage(sb.id)
+  if (!img) return null
+  const provider = String(img.provider || '').trim()
+  const prompt = String(img.prompt || '').trim()
+  if (provider === 'tail-frame' || prompt.startsWith('上镜尾帧')) return img
+  return null
+}
+
+/** 全能模式：尾帧衔接首帧的绝对 URL（无则空串） */
+function getSbContiguityFirstFrameAbsoluteUrl(sb) {
+  const img = getSbContiguityFirstImage(sb)
+  if (!hasAssetImage(img)) return ''
+  return toAbsoluteImageUrl(assetImageUrl(img))
 }
 
 /** 全能模式：与 collectSbOmniReferenceAbsoluteUrls 同序的参考槽位（用于 @ 选择器缩略图） */
 function getSbUniversalOmniRefSlots(sb) {
   if (!sb?.id) return []
-  const out = []
-  let idx = 1
+  const base = []
   const scene = getSbSelectedScene(sb.id)
   if (scene && hasAssetImage(scene)) {
-    out.push({
-      index: idx++,
+    base.push({
       kind: 'scene',
       name: (scene.location || '场景').toString(),
       thumbUrl: assetImageUrl(scene),
@@ -6449,8 +6484,7 @@ function getSbUniversalOmniRefSlots(sb) {
   }
   for (const c of getSbSelectedCharacters(sb.id)) {
     if (hasAssetImage(c)) {
-      out.push({
-        index: idx++,
+      base.push({
         kind: 'character',
         name: (c.name || '角色').toString(),
         thumbUrl: assetImageUrl(c),
@@ -6459,18 +6493,24 @@ function getSbUniversalOmniRefSlots(sb) {
   }
   for (const p of getSbSelectedProps(sb.id)) {
     if (hasAssetImage(p)) {
-      out.push({
-        index: idx++,
+      base.push({
         kind: 'prop',
         name: (p.name || '物品').toString(),
         thumbUrl: assetImageUrl(p),
       })
     }
   }
-  return out
+  // 尾帧衔接首帧固定放在最前面（@图片1），其后依次为场景、角色、物品；方舟多图参考上限 9 张，故基础槽位让出一位
+  const firstImg = isSbUniversalMode(sb.id) ? getSbContiguityFirstImage(sb) : null
+  const firstThumb = hasAssetImage(firstImg) ? assetImageUrl(firstImg) : ''
+  const out = base.slice(0, firstThumb ? 8 : 10)
+  if (firstThumb && !out.some((s) => s.thumbUrl === firstThumb)) {
+    out.unshift({ kind: 'first_frame', name: '首帧', thumbUrl: firstThumb })
+  }
+  return out.map((s, i) => ({ index: i + 1, ...s }))
 }
 
-/** 全能模式：场景/角色/物品 → 绝对 URL 列表（不含经典分镜中间主图；供可灵 Omni / 火山多图参考，最多 10，方舟侧最多取 9 张） */
+/** 全能模式：尾帧衔接首帧 → 场景/角色/物品 → 绝对 URL 列表（不含经典分镜中间主图；方舟侧最多取 9 张） */
 function collectSbOmniReferenceAbsoluteUrls(sb) {
   if (!sb?.id) return []
   const urls = []
@@ -6489,7 +6529,10 @@ function collectSbOmniReferenceAbsoluteUrls(sb) {
   for (const p of getSbSelectedProps(sb.id)) {
     if (hasAssetImage(p)) pushAbs(assetImageUrl(p))
   }
-  return urls.slice(0, 10)
+  const firstAbs = getSbContiguityFirstFrameAbsoluteUrl(sb)
+  const out = urls.slice(0, firstAbs ? 8 : 10)
+  if (firstAbs && !out.includes(firstAbs)) out.unshift(firstAbs)
+  return out
 }
 
 /** 非 Seedance2 全能降级：仅场景参考图（若有） */
@@ -7245,6 +7288,119 @@ async function startBatchImageGeneration() {
   }
 }
 
+// ── 尾帧衔接：同一幕内镜头串行生成，不同幕并发生成 ─────────────────────
+
+/** 本集分镜是否带幕次信息（segment_title） */
+function dramaHasSegmentInfo() {
+  return (store.storyboards || []).some((b) => String(b?.segment_title || '').trim())
+}
+
+/**
+ * 按幕分组（组内保持分镜顺序）。
+ * 无幕次信息时每个分镜独立成组，避免把整集当成一幕串行。
+ */
+function groupStoryboardsBySegment(boards) {
+  const hasSegment = dramaHasSegmentInfo()
+  const groups = []
+  const byKey = new Map()
+  for (const sb of boards) {
+    const key = hasSegment ? `seg-${sb.segment_index ?? 0}` : `sb-${sb.id}`
+    let group = byKey.get(key)
+    if (!group) {
+      group = []
+      byKey.set(key, group)
+      groups.push(group)
+    }
+    group.push(sb)
+  }
+  return groups
+}
+
+/** 同一幕内紧邻的上一个分镜（按分镜顺序；跨幕或无幕次信息时返回 null） */
+function getPrevStoryboardInSameSegment(sb) {
+  if (!sb?.id || !dramaHasSegmentInfo()) return null
+  const list = store.storyboards || []
+  const idx = list.findIndex((s) => Number(s.id) === Number(sb.id))
+  if (idx <= 0) return null
+  const prev = list[idx - 1]
+  return Number(prev.segment_index ?? 0) === Number(sb.segment_index ?? 0) ? prev : null
+}
+
+/**
+ * 尾帧衔接开启时，暂时没有首帧但同幕存在上一镜的分镜也可参与生成（首帧由上一镜尾帧补齐）。
+ */
+function sbEligibleViaTailFrameChain(sb) {
+  return !!storyboardTailFrameChain.value && !!getPrevStoryboardInSameSegment(sb)
+}
+
+/**
+ * 尾帧衔接（静默版，无确认框）：把 prevSb 已完成视频的最后一帧设为 nextSb 的首帧。
+ * 仅在 nextSb 确实是 prevSb 的下一分镜时执行；不适用时返回 null。
+ */
+async function linkTailFrameSilently(prevSb, nextSb) {
+  if (!prevSb?.id || !nextSb?.id || !dramaId.value) return null
+  const next = getNextStoryboard(prevSb.id)
+  if (!next || Number(next.id) !== Number(nextSb.id)) return null
+  const data = await storyboardsAPI.linkTailFrame(prevSb.id, { drama_id: dramaId.value })
+  if (data?.error) throw new Error(data.error)
+  if (data?.next_storyboard_id != null && Number(data.next_storyboard_id) !== Number(nextSb.id)) {
+    throw new Error('尾帧衔接目标分镜不一致')
+  }
+  // 乐观更新：getSbFirstImage 以 storyboard.first_frame_image_id 为最高权威
+  const list = store.currentEpisode?.storyboards
+  if (Array.isArray(list)) {
+    const row = list.find((x) => Number(x.id) === Number(nextSb.id))
+    if (row) {
+      row.first_frame_image_id = data.new_first_frame_image_id ?? null
+      row.image_url = data.image_url ?? null
+      row.local_path = data.local_path ?? null
+    }
+  }
+  if (data.new_first_frame_image_id != null) {
+    sbSelectedImgId.value = { ...sbSelectedImgId.value, [nextSb.id]: data.new_first_frame_image_id }
+  }
+  await loadSingleStoryboardMedia(nextSb.id)
+  return data
+}
+
+/**
+ * 尾帧衔接执行器：按幕分组，同幕内严格串行（前一镜完成后取尾帧衔接下一镜），不同幕并发。
+ * generateOne(sb) 需返回 'ok' | 'failed' | 'paused'；同幕某镜失败后，该幕剩余镜头不再生成（onSkip 回调）。
+ */
+async function runTailFrameChain(boards, concurrency, generateOne, onSkip, options = {}) {
+  const getLabel = options.getLabel || (() => null)
+  const groups = groupStoryboardsBySegment(boards)
+  const tasks = groups.map((group) => async () => {
+    let failedSb = null
+    for (const sb of group) {
+      if (failedSb) {
+        if (typeof onSkip === 'function') onSkip(sb, failedSb)
+        continue
+      }
+      const prev = getPrevStoryboardInSameSegment(sb)
+      if (prev) {
+        try {
+          await linkTailFrameSilently(prev, sb)
+        } catch (e) {
+          console.warn('[尾帧衔接] 自动衔接失败', prev.id, '→', sb.id, e?.message || e)
+        }
+      }
+      const label = getLabel(sb)
+      if (label) pipelineActiveTasks.add(label)
+      let result
+      try {
+        result = await generateOne(sb)
+      } finally {
+        if (label) pipelineActiveTasks.delete(label)
+      }
+      if (result === 'paused') return { paused: true }
+      if (result !== 'ok') failedSb = sb
+    }
+    return { paused: false }
+  })
+  return runConcurrently(tasks, concurrency, (task) => task())
+}
+
 async function startBatchVideoGeneration() {
   if (!currentEpisodeId.value || batchVideoRunning.value || pipelineRunning.value) return
   batchVideoErrors.value = []
@@ -7264,7 +7420,8 @@ async function startBatchVideoGeneration() {
         if (!sbCanSubmitVideo(sb)) return false
         return collectSbOmniReferenceAbsoluteUrls(sb).length > 0
       }
-      return !!getSbFirstFrameUrl(sb)
+      // 尾帧衔接：同幕非首镜即使暂无首帧也参与生成（首帧由上一镜尾帧补齐）
+      return !!getSbFirstFrameUrl(sb) || sbEligibleViaTailFrameChain(sb)
     })
     if (todo.length === 0) {
       ElMessage.info('没有需要生成视频的分镜（分镜缺少图片，或视频已全部生成）')
@@ -7272,28 +7429,28 @@ async function startBatchVideoGeneration() {
     }
     batchVideoProgress.value = { current: 0, total: todo.length, failed: 0 }
     const contiguity = videoFrameContiguity.value
-    // 连贯帧模式强制顺序（concurrency=1），普通模式并发
+    // 连贯帧模式强制顺序（concurrency=1）；尾帧衔接按幕并发（同幕串行、不同幕并发）
     const videoConcurrency = contiguity ? 1 : (pipelineVideoConcurrency.value || 2)
     let videoDoneCount = 0
+    let chainSkippedCount = 0
     let prevVideoItem = null  // 连贯帧：保存上一条已完成的视频记录
 
-    let videoQueueIdx = 0
-    const videoWorker = async () => {
-      while (videoQueueIdx < todo.length) {
-        if (batchVideoStopping.value) break
-        const sb = todo[videoQueueIdx++]
+    /** 生成单个分镜视频；返回 'ok' | 'failed' | 'paused' */
+    const generateOne = async (sb) => {
+      if (batchVideoStopping.value) return 'paused'
+      try {
         const universal = isSbUniversalMode(sb.id)
         const omniRefs = universal ? collectSbOmniReferenceAbsoluteUrls(sb) : []
         if (!universal && !getSbFirstFrameUrl(sb)) {
-          videoDoneCount++
-          batchVideoProgress.value = { ...batchVideoProgress.value, current: videoDoneCount }
-          continue
+          // 尾帧衔接模式下同幕非首镜必须有首帧（衔接失败会影响整幕），按失败处理以中断本幕后续镜头
+          if (sbEligibleViaTailFrameChain(sb)) {
+            batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: 缺少首帧（尾帧衔接未完成）`)
+            batchVideoProgress.value = { ...batchVideoProgress.value, failed: batchVideoProgress.value.failed + 1 }
+            return 'failed'
+          }
+          return 'ok'
         }
-        if (universal && !omniRefs.length) {
-          videoDoneCount++
-          batchVideoProgress.value = { ...batchVideoProgress.value, current: videoDoneCount }
-          continue
-        }
+        if (universal && !omniRefs.length) return 'ok'
         try {
           generatingSbVideoIds.add(sb.id)
           // 批量生成时清除手动指定的视频，确保合成时使用最新生成记录
@@ -7351,6 +7508,7 @@ async function startBatchVideoGeneration() {
               batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${pollRes.error || '生成失败'}`)
               batchVideoProgress.value = { ...batchVideoProgress.value, failed: batchVideoProgress.value.failed + 1 }
               prevVideoItem = null
+              return 'failed'
             } else if (contiguity && pollRes?.status === 'completed') {
               // 连贯帧：保存本条视频用于下一条
               const vList = sbVideos.value[sb.id] || []
@@ -7363,21 +7521,49 @@ async function startBatchVideoGeneration() {
               prevVideoItem = vList.find((v) => v.status === 'completed') || null
             }
           }
+          return 'ok'
         } catch (e) {
           batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${e.message || '提交失败'}`)
           batchVideoProgress.value = { ...batchVideoProgress.value, failed: batchVideoProgress.value.failed + 1 }
           if (contiguity) prevVideoItem = null
+          return 'failed'
         } finally {
           generatingSbVideoIds.delete(sb.id)
         }
+      } finally {
         videoDoneCount++
         batchVideoProgress.value = { ...batchVideoProgress.value, current: videoDoneCount }
       }
     }
-    await Promise.allSettled(Array.from({ length: Math.min(videoConcurrency, todo.length) }, () => videoWorker()))
+
+    if (storyboardTailFrameChain.value) {
+      // 同幕内串行（前一镜完成后取尾帧衔接下一镜），不同幕并发；某镜失败后同幕剩余镜头不再生成
+      await runTailFrameChain(todo, videoConcurrency, generateOne, (sb) => {
+        chainSkippedCount++
+        batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: 同幕前一镜生成失败，已跳过`)
+        videoDoneCount++
+        batchVideoProgress.value = { ...batchVideoProgress.value, current: videoDoneCount }
+      })
+    } else {
+      let videoQueueIdx = 0
+      const videoWorker = async () => {
+        while (videoQueueIdx < todo.length) {
+          if (batchVideoStopping.value) break
+          await generateOne(todo[videoQueueIdx++])
+        }
+      }
+      await Promise.allSettled(Array.from({ length: Math.min(videoConcurrency, todo.length) }, () => videoWorker()))
+    }
     if (!batchVideoStopping.value) {
-      if (batchVideoProgress.value.failed === 0) ElMessage.success(`分镜视频批量生成完成（共 ${todo.length} 条）`)
-      else ElMessage.warning(`批量完成，${batchVideoProgress.value.failed}/${todo.length} 条失败`)
+      const failed = batchVideoProgress.value.failed
+      if (failed === 0 && chainSkippedCount === 0) {
+        ElMessage.success(`分镜视频批量生成完成（共 ${todo.length} 条）`)
+      } else {
+        const parts = []
+        if (failed) parts.push(`${failed} 条失败`)
+        if (chainSkippedCount) parts.push(`${chainSkippedCount} 条因同幕前一镜失败已跳过`)
+        ElMessage.warning(`批量完成：${parts.join('，')}（共 ${todo.length} 条）`)
+      }
     } else {
       ElMessage.info('批量生成已停止')
     }
@@ -8039,11 +8225,13 @@ async function runOneClickPipeline(textOnly = false) {
           if (!sbCanSubmitVideo(sb)) return false
           return collectSbOmniReferenceAbsoluteUrls(sb).length > 0
         }
-        return !!getSbFirstFrameUrl(sb)
+        return !!getSbFirstFrameUrl(sb) || sbEligibleViaTailFrameChain(sb)
       })
       const concurrency = pipelineVideoConcurrency.value
-      setPipelineStep(9, `生成分镜视频（${boards2.length} 个，并发 ${concurrency}）...`)
-      const { paused } = await runConcurrently(boards2, concurrency, async (sb) => {
+      const chainMode = storyboardTailFrameChain.value
+      setPipelineStep(9, `生成分镜视频（${boards2.length} 个，并发 ${concurrency}${chainMode ? '，同幕串行' : ''}）...`)
+      /** 生成单个分镜视频；返回 'ok' | 'failed' | 'paused' */
+      const generateOne = async (sb) => {
         await checkPause()
         generatingSbVideoIds.add(sb.id)
         try {
@@ -8080,12 +8268,25 @@ async function runOneClickPipeline(textOnly = false) {
               if (result?.error) throw new Error(result.error)
             } else await loadSingleStoryboardMedia(sb.id)
           })
-          if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
+          if (ok && typeof ok === 'object' && ok.paused) return 'paused'
+          return ok === false ? 'failed' : 'ok'
         } finally {
           generatingSbVideoIds.delete(sb.id)
         }
-      }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })
-      if (paused) { await waitForResume() }
+      }
+      if (chainMode) {
+        // 同幕内串行（前一镜完成后取尾帧衔接下一镜），不同幕并发；某镜失败后同幕剩余镜头不再生成
+        const { paused } = await runTailFrameChain(boards2, concurrency, generateOne, (sb) => {
+          addPipelineError('分镜视频 #' + (sb.storyboard_number ?? sb.id), '同幕前一镜生成失败，已跳过')
+        }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })
+        if (paused) { await waitForResume() }
+      } else {
+        const { paused } = await runConcurrently(boards2, concurrency, async (sb) => {
+          const r = await generateOne(sb)
+          return r === 'paused' ? { paused: true } : undefined
+        }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })
+        if (paused) { await waitForResume() }
+      }
     }
 
     // 步骤 10：合成整集视频
@@ -8379,12 +8580,14 @@ async function runRepairPipeline() {
         if (!sbCanSubmitVideo(sb)) return false
         return collectSbOmniReferenceAbsoluteUrls(sb).length > 0
       }
-      return !!getSbFirstFrameUrl(sb)
+      return !!getSbFirstFrameUrl(sb) || sbEligibleViaTailFrameChain(sb)
     })
     {
       const concurrency = pipelineVideoConcurrency.value
-      pipelineCurrentStep.value = `正在生成分镜视频（并发${concurrency}）...`
-      const { paused } = await runConcurrently(boards2, concurrency, async (sb) => {
+      const chainMode = storyboardTailFrameChain.value
+      pipelineCurrentStep.value = `正在生成分镜视频（并发${concurrency}${chainMode ? '，同幕串行' : ''}）...`
+      /** 生成单个分镜视频；返回 'ok' | 'failed' | 'paused' */
+      const generateOne = async (sb) => {
         await checkPause()
         generatingSbVideoIds.add(sb.id)
         try {
@@ -8420,12 +8623,25 @@ async function runRepairPipeline() {
               if (result?.error) throw new Error(result.error)
             } else await loadSingleStoryboardMedia(sb.id)
           })
-          if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
+          if (ok && typeof ok === 'object' && ok.paused) return 'paused'
+          return ok === false ? 'failed' : 'ok'
         } finally {
           generatingSbVideoIds.delete(sb.id)
         }
-      }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })
-      if (paused) { await waitForResume() }
+      }
+      if (chainMode) {
+        // 同幕内串行（前一镜完成后取尾帧衔接下一镜），不同幕并发；某镜失败后同幕剩余镜头不再生成
+        const { paused } = await runTailFrameChain(boards2, concurrency, generateOne, (sb) => {
+          pipelineErrorLog.value.push('分镜视频 #' + (sb.storyboard_number ?? sb.id) + ': 同幕前一镜生成失败，已跳过')
+        }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })
+        if (paused) { await waitForResume() }
+      } else {
+        const { paused } = await runConcurrently(boards2, concurrency, async (sb) => {
+          const r = await generateOne(sb)
+          return r === 'paused' ? { paused: true } : undefined
+        }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })
+        if (paused) { await waitForResume() }
+      }
     }
 
     // 4. 生成整集视频（合成整个视频）
@@ -10354,6 +10570,51 @@ html.light .sb-universal-tooltip strong {
   min-height: 220px !important;
   font-size: 13px;
   line-height: 1.55;
+}
+.sb-universal-first-frame {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: rgba(168, 85, 247, 0.08);
+  border: 1px solid rgba(168, 85, 247, 0.28);
+}
+.sb-universal-first-frame-img {
+  width: 72px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+  cursor: zoom-in;
+  flex-shrink: 0;
+}
+.sb-universal-first-frame-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sb-universal-first-frame-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #d8b4fe;
+}
+.sb-universal-first-frame-note {
+  font-size: 11px;
+  line-height: 1.4;
+  color: #9ca3af;
+}
+html.light .sb-universal-first-frame {
+  background: #faf5ff;
+  border-color: #e9d5ff;
+}
+html.light .sb-universal-first-frame-title {
+  color: #7e22ce;
+}
+html.light .sb-universal-first-frame-note {
+  color: #6b7280;
 }
 .vp-mode-hint {
   font-size: 12px;

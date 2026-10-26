@@ -1446,6 +1446,29 @@ async function callGeminiImageApi(db, config, log, opts) {
   return { error: 'Gemini 未返回图片内容，请检查模型名称或 API Key 权限' };
 }
 
+/** 日志用：参考图为 base64/data URL 时只保留头部，避免整段打印 */
+function shortenImageRefForLog(ref) {
+  const s = typeof ref === 'string' ? ref : String(ref ?? '');
+  if (!s) return s;
+  if (s.startsWith('data:')) {
+    const comma = s.indexOf(',');
+    const head = comma >= 0 ? s.slice(0, comma + 1) : s.slice(0, 32);
+    return `${head}…[base64 ${s.length} chars]`;
+  }
+  if (s.length > 200) return `${s.slice(0, 120)}…[${s.length} chars]`;
+  return s;
+}
+
+/** 日志用：截断 body 中的参考图数组（image / extra_body.image） */
+function bodyForLog(body) {
+  const out = { ...body };
+  if (Array.isArray(body.image)) out.image = body.image.map(shortenImageRefForLog);
+  if (body.extra_body && Array.isArray(body.extra_body.image)) {
+    out.extra_body = { ...body.extra_body, image: body.extra_body.image.map(shortenImageRefForLog) };
+  }
+  return out;
+}
+
 /**
  * 调用提供商图片生成 API（OpenAI /images/generations 风格 或 通义万象 multimodal-generation）
  * @param {object} db - database
@@ -1616,7 +1639,7 @@ async function callImageApi(db, log, opts) {
     ratio: isAgnes && agnesSizeSpec ? agnesSizeSpec.ratio : undefined,
     original_size: size !== effectiveSize ? size : undefined,
     is_agnes: isAgnes,
-    body_json: JSON.stringify(body),
+    body_json: JSON.stringify(bodyForLog(body)),
   });
 
   const openaiCompatHeaders = {
