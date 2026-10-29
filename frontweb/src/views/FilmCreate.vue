@@ -1718,7 +1718,7 @@
           <el-alert type="error" :title="videoErrorMsg" show-icon />
         </div>
         <div v-if="currentEpisodeVideoUrl" class="video-preview-wrap">
-          <p class="video-preview-label">本集合成视频预览</p>
+          <p class="video-preview-label"></p>
           <video
             :src="currentEpisodeVideoUrl"
             controls
@@ -2725,6 +2725,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import { parseScriptIntoEpisodes, episodesListToPlainScript } from '@/utils/scriptEpisodes'
 import { canUseUniversalOmniVideoApi } from '@/utils/videoOmniSupport'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
+import { normalizeMediaUrl } from '@/utils/mediaUrl'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
@@ -2885,8 +2886,8 @@ function trackFilmCreateAction(_action, _payload = {}) {
 }
 /** 当前集合成视频的播放地址（用于按钮下方预览） */
 const currentEpisodeVideoUrl = computed(() => {
-  const url = currentEpisode.value?.video_url
-  if (!url || !String(url).trim()) return ''
+  const url = normalizeMediaUrl(currentEpisode.value?.video_url)
+  if (!url) return ''
   const s = String(url).trim()
   if (s.startsWith('http://') || s.startsWith('https://')) return s
   return '/static/' + s.replace(/^\//, '')
@@ -3883,7 +3884,7 @@ function assetVideoUrl(item) {
   if (!item) return ''
   const localPath = item.local_path && String(item.local_path).trim()
   if (localPath) return '/static/' + localPath.replace(/^\//, '')
-  if (item.video_url) return imageUrl(item.video_url)
+  if (item.video_url) return normalizeMediaUrl(imageUrl(item.video_url))
   return ''
 }
 /** 远程视频须为 http(s)，避免上游 FAILURE 时把错误文案写入 video_url */
