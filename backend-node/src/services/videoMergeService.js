@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { getFfmpegPath, getFfprobePath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
 const storageLayout = require('./storageLayout');
 
@@ -96,6 +97,18 @@ async function resolveVideoToLocalPath(videoUrl, baseUrl, storageRoot, tempDir, 
       }
     }
   }
+  // 1.5) 任意 host 的 /static/xxx URL（base_url 改过内网 IP 的历史数据也能定位到本地文件）
+  const staticIdx = u.indexOf('/static/');
+  if (staticIdx >= 0) {
+    const rel = u.slice(staticIdx + '/static/'.length);
+    if (rel && !rel.startsWith('http')) {
+      const localPath = path.join(storageRoot, rel.replace(/\//g, path.sep));
+      if (fs.existsSync(localPath)) {
+        log.info('Video merge: using local static file (by /static/)', { index, path: localPath });
+        return localPath;
+      }
+    }
+  }
   // 2) 已是本地绝对路径且存在
   if (path.isAbsolute(u) && fs.existsSync(u)) {
     log.info('Video merge: using absolute path', { index, path: u });
@@ -165,27 +178,211 @@ function runFfmpegConcatOnce(listFile, outputPath, transcode, log) {
   return true;
 }
 
-/** 使用 ffmpeg concat 合并多个视频文件：先流拷贝，失败再重编码兜底 */
+/** 读取视频文件真实时长（秒），失败返回 null */
+function probeDuration(filePath) {
+  try {
+    const { spawnSync } = require('child_process');
+    const res = spawnSync(getFfprobePath(), [
+      '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', filePath,
+    ], { encoding: 'utf8' });
+    if (res.status !== 0) return null;
+    const d = parseFloat(String(res.stdout).trim());
+    return Number.isFinite(d) && d > 0 ? d : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * 校验合并结果时长是否接近各输入片段时长之和。
+ * 流拷贝 concat 在编码参数不一致时可能「成功退出」但只保留首段，需要识别出来。
+ */
+function isConcatResultComplete(localPaths, outputPath, log) {
+  const expected = localPaths.reduce((sum, p) => sum + (probeDuration(p) || 0), 0);
+  const actual = probeDuration(outputPath);
+  if (!expected || !actual) return true; // 无法探测时不阻塞合并
+  const complete = actual >= expected * 0.9;
+  if (!complete) {
+    log.warn('Video merge: concat result shorter than expected', {
+      expected: Math.round(expected * 100) / 100,
+      actual: Math.round(actual * 100) / 100,
+      clip_count: localPaths.length,
+    });
+  }
+  return complete;
+}
+
+/** 探测视频流参数，失败返回 null */
+function probeVideoInfo(filePath) {
+  try {
+    const { spawnSync } = require('child_process');
+    const res = spawnSync(getFfprobePath(), [
+      '-v', 'error',
+      '-show_entries', 'stream=codec_type,codec_name,width,height,r_frame_rate,sample_rate,channels',
+      '-of', 'json', filePath,
+    ], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    if (res.status !== 0) return null;
+    const streams = JSON.parse(String(res.stdout || '{}')).streams || [];
+    const v = streams.find((s) => s.codec_type === 'video');
+    const a = streams.find((s) => s.codec_type === 'audio');
+    if (!v || !v.width || !v.height) return null;
+    const [num, den] = String(v.r_frame_rate || '0/1').split('/').map(Number);
+    const fps = den ? num / den : 0;
+    return {
+      width: Number(v.width),
+      height: Number(v.height),
+      vcodec: v.codec_name || '',
+      fps: fps ? Math.round(fps * 100) / 100 : 0,
+      hasAudio: !!a,
+      acodec: a ? a.codec_name : null,
+      sampleRate: a ? Number(a.sample_rate) || 44100 : null,
+      channels: a ? Number(a.channels) || 2 : null,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 所有片段编码参数完全一致时才可直接流拷贝，否则拼接处会时间戳错乱导致播放卡在第一段 */
+function canStreamCopy(infos) {
+  const first = infos[0];
+  if (!first) return false;
+  return infos.every((i) => i
+    && i.width === first.width
+    && i.height === first.height
+    && i.vcodec === first.vcodec
+    && i.fps === first.fps
+    && i.hasAudio === first.hasAudio
+    && (!first.hasAudio || (
+      i.acodec === first.acodec
+      && i.sampleRate === first.sampleRate
+      && i.channels === first.channels
+    )));
+}
+
+/** 把单个片段重编码到统一的分辨率/帧率/音频参数 */
+function normalizeClip(input, output, target, info, log) {
+  const { spawnSync } = require('child_process');
+  const vf = [
+    `scale=${target.width}:${target.height}:force_original_aspect_ratio=decrease`,
+    `pad=${target.width}:${target.height}:(ow-iw)/2:(oh-ih)/2`,
+    'setsar=1',
+    `fps=${target.fps}`,
+  ].join(',');
+  const args = ['-y', '-i', input];
+  // 片段缺音轨时补静音，保证各片段音视频流结构一致
+  if (target.hasAudio && !info.hasAudio) {
+    args.push('-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=${target.sampleRate}`);
+  }
+  args.push('-vf', vf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p');
+  if (target.hasAudio) {
+    args.push('-c:a', 'aac', '-ar', String(target.sampleRate), '-ac', '2');
+    if (!info.hasAudio) args.push('-shortest');
+  } else {
+    args.push('-an');
+  }
+  args.push(output);
+  const res = spawnSync(getFfmpegPath(), args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+  if (res.error || res.status !== 0) {
+    log.warn('Video merge: normalize clip failed', {
+      input,
+      error: res.error?.message,
+      stderr: res.stderr?.slice(-500),
+    });
+    return false;
+  }
+  return true;
+}
+
+/** 把所有片段统一参数后输出到临时目录，返回 { dir, paths }，失败返回 null */
+function normalizeClips(localPaths, infos, log) {
+  const first = infos[0];
+  const withAudio = infos.find((i) => i && i.hasAudio);
+  const target = {
+    width: first.width % 2 === 0 ? first.width : first.width + 1,
+    height: first.height % 2 === 0 ? first.height : first.height + 1,
+    fps: first.fps || 30,
+    hasAudio: infos.some((i) => i && i.hasAudio),
+    sampleRate: (withAudio && withAudio.sampleRate) || 44100,
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drama-clip-norm-'));
+  const paths = [];
+  for (let i = 0; i < localPaths.length; i++) {
+    const out = path.join(dir, `norm_${i}.mp4`);
+    if (!normalizeClip(localPaths[i], out, target, infos[i], log)) {
+      for (const p of paths) { try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {} }
+      try { fs.rmdirSync(dir); } catch (_) {}
+      return null;
+    }
+    paths.push(out);
+  }
+  log.info('Video merge: clips normalized', {
+    clip_count: paths.length, width: target.width, height: target.height, fps: target.fps, audio: target.hasAudio,
+  });
+  return { dir, paths };
+}
+
+/** 使用 ffmpeg concat 合并多个视频文件：参数一致时流拷贝，不一致时先归一化再合并 */
 function runFfmpegConcat(localPaths, outputPath, log) {
   const listFile = path.join(path.dirname(outputPath), `concat_list_${Date.now()}.txt`);
+  let norm = null;
   try {
-    const lines = localPaths.map((p) => {
-      const normalized = p.replace(/\\/g, '/');
-      return `file '${normalized.replace(/'/g, "'\\''")}'`;
-    });
-    fs.writeFileSync(listFile, lines.join('\n'), 'utf8');
-    if (runFfmpegConcatOnce(listFile, outputPath, false, log)) return true;
-    log.warn('Video merge: stream copy concat failed, retrying with re-encode', {
+    const writeList = (files) => {
+      const lines = files.map((p) => {
+        const normalized = p.replace(/\\/g, '/');
+        return `file '${normalized.replace(/'/g, "'\\''")}'`;
+      });
+      fs.writeFileSync(listFile, lines.join('\n'), 'utf8');
+    };
+    writeList(localPaths);
+
+    const infos = localPaths.map(probeVideoInfo);
+    const allKnown = infos.every(Boolean);
+
+    // 片段参数不一致：先归一化再拼接，避免直接流拷贝后播放器卡在第一段
+    if (allKnown && !canStreamCopy(infos)) {
+      log.warn('Video merge: clip parameters differ, normalizing before concat', {
+        clip_count: localPaths.length,
+        width: infos[0].width,
+        height: infos[0].height,
+        fps: infos[0].fps,
+      });
+      norm = normalizeClips(localPaths, infos, log);
+      if (norm) {
+        writeList(norm.paths);
+        if (
+          runFfmpegConcatOnce(listFile, outputPath, false, log)
+          && isConcatResultComplete(norm.paths, outputPath, log)
+        ) {
+          return true;
+        }
+      }
+      writeList(localPaths);
+      return runFfmpegConcatOnce(listFile, outputPath, true, log);
+    }
+
+    if (
+      runFfmpegConcatOnce(listFile, outputPath, false, log)
+      && isConcatResultComplete(localPaths, outputPath, log)
+    ) {
+      return true;
+    }
+    log.warn('Video merge: stream copy concat failed or incomplete, retrying with re-encode', {
       clip_count: localPaths.length,
     });
     return runFfmpegConcatOnce(listFile, outputPath, true, log);
   } finally {
     try { if (fs.existsSync(listFile)) fs.unlinkSync(listFile); } catch (_) {}
+    if (norm) {
+      for (const p of norm.paths) { try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {} }
+      try { fs.rmdirSync(norm.dir); } catch (_) {}
+    }
   }
 }
 
 /**
- * 异步处理视频合成：优先使用 ffmpeg 真正合并多段视频；失败或无 ffmpeg 时用首段作为 merged_url。
+ * 异步处理视频合成：使用 ffmpeg 合并多段视频；单片段直接使用原视频；
+ * 多片段合并失败时标记任务失败（不再退化成首段）。
  */
 async function processVideoMerge(db, log, mergeId, baseUrl) {
   const r = db.prepare('SELECT * FROM video_merges WHERE id = ? AND deleted_at IS NULL').get(mergeId);
@@ -298,16 +495,40 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
     try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {}
   }
 
-  const finalMergedUrl = mergedRelativePath || mergedUrlFallback;
+  if (!mergedRelativePath) {
+    // 只有一段视频时无需合并，直接使用原视频
+    if (scenes.length === 1 && mergedUrlFallback) {
+      db.prepare(
+        'UPDATE video_merges SET status = ?, merged_url = ?, duration = ?, completed_at = ?, error_msg = ? WHERE id = ?'
+      ).run('completed', mergedUrlFallback, Math.round(totalDuration) || null, now, null, mergeId);
+      db.prepare('UPDATE episodes SET video_url = ?, status = ?, updated_at = ? WHERE id = ?')
+        .run(mergedUrlFallback, 'completed', now, episodeId);
+      if (taskId) {
+        taskService.updateTaskResult(db, taskId, { merge_id: mergeId, video_url: mergedUrlFallback, duration: Math.round(totalDuration) });
+      }
+      log.info('Video merge: single clip, no concat needed', { merge_id: mergeId, episode_id: episodeId });
+      return;
+    }
+    // 多片段合并失败：明确报错，避免把首段当作合成结果（用户看到的就是「只包含第一个视频」）
+    const reason = !ffmpegAvailable
+      ? '未检测到 ffmpeg，无法合成视频。请安装 ffmpeg 或将其放入 backend-node/tools/ffmpeg/ 目录'
+      : localPaths.length < scenes.length
+        ? `视频合成失败：仅成功读取 ${localPaths.length}/${scenes.length} 个视频片段`
+        : '视频合成失败：ffmpeg 合并出错，请查看后端日志';
+    db.prepare('UPDATE video_merges SET status = ?, error_msg = ? WHERE id = ?').run('failed', reason, mergeId);
+    db.prepare('UPDATE episodes SET status = ?, updated_at = ? WHERE id = ?').run('failed', now, episodeId);
+    if (taskId) taskService.updateTaskError(db, taskId, reason);
+    log.warn('Video merge failed', { merge_id: mergeId, episode_id: episodeId, reason });
+    return;
+  }
+
+  const finalMergedUrl = mergedRelativePath;
   db.prepare(
     'UPDATE video_merges SET status = ?, merged_url = ?, duration = ?, completed_at = ?, error_msg = ? WHERE id = ?'
   ).run('completed', finalMergedUrl, Math.round(totalDuration) || null, now, null, mergeId);
   db.prepare('UPDATE episodes SET video_url = ?, status = ?, updated_at = ? WHERE id = ?').run(finalMergedUrl, 'completed', now, episodeId);
   if (taskId) {
     taskService.updateTaskResult(db, taskId, { merge_id: mergeId, video_url: finalMergedUrl, duration: Math.round(totalDuration) });
-  }
-  if (!mergedRelativePath) {
-    log.info('Video merge completed (first-clip fallback)', { merge_id: mergeId, episode_id: episodeId });
   }
 }
 

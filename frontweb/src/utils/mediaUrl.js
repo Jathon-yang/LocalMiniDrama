@@ -14,6 +14,18 @@ export function normalizeMediaUrl(url) {
   return s
 }
 
+/**
+ * 把 storage 相对路径统一成可访问的 URL。
+ * 已带 /static/ 前缀或已是 http(s) 地址时原样返回，避免出现 /static/static/。
+ */
+export function staticUrl(path) {
+  const s = normalizeMediaUrl(path)
+  if (!s) return ''
+  if (s.startsWith('http://') || s.startsWith('https://')) return s
+  if (s.startsWith('/static/')) return s
+  return '/static/' + s.replace(/^\//, '')
+}
+
 /** 统一媒体 URL：优先 local_path，其次 image_url / video_url */
 export function assetImageUrl(item) {
   if (!item) return ''

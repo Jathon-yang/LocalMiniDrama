@@ -1,5 +1,7 @@
 // 对应 Go application/services/drama_service.go
 
+const fs = require('fs');
+const path = require('path');
 const storageLayout = require('./storageLayout');
 const { resolveStylePreset } = require('../constants/generationStylePresets');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
@@ -12,6 +14,13 @@ function sanitizeImageUrl(url) {
   if (!url) return null;
   if (String(url).startsWith('data:')) return null;
   return url;
+}
+
+/** 获取 storage 根目录（绝对路径），与 videoMergeService 保持一致 */
+function getStorageRootPath() {
+  const cfg = require('../config').loadConfig();
+  const p = cfg.storage?.local_path || './data/storage';
+  return path.isAbsolute(p) ? p : path.join(process.cwd(), p);
 }
 
 function parseJsonColumn(value) {
@@ -755,12 +764,17 @@ function getVideoUrlForStoryboard(db, storyboardId, baseUrl) {
   ).get(storyboardId);
 
   // 辅助函数：构造完整 URL，优先使用本地路径（避免远程URL过期导致无法合并）
+  const storageRoot = getStorageRootPath();
+  const localAbsExists = (localPath) => {
+    const lp = localPath && String(localPath).trim();
+    if (!lp) return false;
+    const abs = path.isAbsolute(lp) ? lp : path.join(storageRoot, lp.replace(/^\//, ''));
+    return fs.existsSync(abs);
+  };
   const buildUrl = (videoUrl, localPath) => {
-    if (localPath && String(localPath).trim() && baseUrl) {
-      const base = (baseUrl || '').replace(/\/$/, '');
-      const p = String(localPath).replace(/^\//, '');
-      return p ? base + '/' + p : null;
-    }
+    // 本地文件存在时直接返回 storage 相对路径：合成时无需走 localhost/网络，也不受 base_url 配置影响
+    const lp = localPath && String(localPath).trim();
+    if (lp && localAbsExists(lp)) return String(lp).replace(/\\/g, '/').replace(/^\//, '');
     if (videoUrl && String(videoUrl).trim()) return videoUrl;
     return null;
   };
