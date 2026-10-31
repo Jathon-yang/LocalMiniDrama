@@ -79,7 +79,7 @@ Each element is a character object containing the above fields.`;
 2. 对每个角色，提取以下信息（全部用中文填写）：
    - name: 角色名字（中文）
    - role: 角色类型，固定值之一：main / supporting / minor
-   - appearance: 外貌描述（中文，100-200字，包含性别、年龄、体型、面部特征、发型、服装风格等，不含任何场景或环境信息）
+   - appearance: 外貌描述（中文，100-200字，包含性别、年龄、详细准确的身高体重、面部特征、发型、服装风格等，不含任何场景或环境信息）
    - description: 背景故事和角色关系（中文，50-100字）
 3. 主要角色外貌要详细，次要角色可简化
 - **风格要求**：${style}
@@ -298,6 +298,7 @@ Sum(T1..TM) MUST equal this shot's JSON "duration" seconds exactly.
 Reference token order: if this shot has a tail-frame continuity first frame, @图片1 = that first frame (the first sub-shot must start from it, no jump cut), @图片2 = scene/environment, characters from @图片3 in characters[] order; otherwise @图片1 = scene/environment only, @图片2+ = characters in characters[] order; props follow.
 Dialogue: use the character's own token with its actual number, e.g. @图片1 says:"verbatim line" or …嗓音…："line". No speech: end with 无对白。
 Narration: 旁白（画面无声）："verbatim narration"
+Character build: every character's FIRST appearance MUST state CONCRETE measurements (use CHARACTER_APPEARANCE; if absent, infer plausibly from age/species/build) — humans: 身高X米、体重XXkg; animals/non-humans: 体长X米、肩高/身高X米、体重XXkg, e.g. @图片2 的身高1.6米、体重60kg 的瘦削青年, @图片3 的体长3.5米、肩高1.8米、体重1.2吨 的巨型虎斑猫. NEVER use vague or relative size words such as 面包车大小/巨型/很高/很瘦 in place of numbers. In multi-character shots, distinguish characters by these numbers. Do not repeat it in later beats of the same character.
 Each beat: rich motion picture prose (push in, pull back, rack focus), not a static snapshot caption.`;
   }
   return `
@@ -318,6 +319,7 @@ Each beat: rich motion picture prose (push in, pull back, rack focus), not a sta
 - **运镜**：每段含至少两步运镜（如 缓推、横移、跟拍、拉回、俯拍特写），与人物动作同步。
 - **对白**：有 dialogue 时必须写出原文，格式如 @图片1 的嗓音…："对白原文" 或 @图片1 说："对白原文"（将其中的 @图片1 替换为该角色实际对应的 @图片 编号）；无对白则句末写 **无对白。**
 - **解说**：有 narration 时写在合适子分镜：**旁白（画面无声）："解说原文"**
+- **角色体型（具体数值）**：每个角色首次出场必须用 **具体数值** 写明体型（参考 CHARACTER_APPEARANCE；未给出时按角色年龄/物种/体型合理设定）：人类写「身高X米、体重XXkg」；动物/非人写「体长X米、肩高或身高X米、体重XXkg」。格式如「身高1.6米、体重60kg 的瘦削青年」「体长3.5米、肩高1.8米、体重1.2吨 的巨型虎斑猫」。**禁止**用「面包车大小」「巨型」「很高」「很瘦」等模糊或相对表述代替数值。本镜有多个角色时，用数值差异区分人物。同一角色的后续子分镜不必重复。
 - **禁止**：概括式台词（如「他说了一句重要的话」）、@人物N、markdown、SoulLens 段标签
 
 范例结构（勿照抄剧情，仅学排版）：
@@ -325,7 +327,7 @@ Each beat: rich motion picture prose (push in, pull back, rack focus), not a sta
 生成一个由以下3个分镜组成的视频。
 ${DEFAULT_LINE3}
 分镜1： 5秒: 镜头从 @图片1 … 无对白。
-分镜2： 5秒: … @图片2 …："台词原文"
+分镜2： 5秒: … 身高1.6米、体重60kg 的瘦削青年（@图片2）上前一步，身高1.85米、体重95kg 的魁梧中年男人（@图片3）俯视着他…："台词原文"
 分镜3： 5秒: … 旁白（画面无声）："解说原文"`;
 }
 

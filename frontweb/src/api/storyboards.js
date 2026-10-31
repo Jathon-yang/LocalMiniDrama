@@ -115,8 +115,8 @@ export const storyboardsAPI = {
       onDelta
     )
   },
-  insertBefore(id) {
-    return request.post(`/storyboards/${id}/insert-before`, {})
+  insertBefore(id, data = {}) {
+    return request.post(`/storyboards/${id}/insert-before`, data)
   },
   batchInferParams(episodeId, overwrite = false) {
     return request.post('/storyboards/batch-infer-params', { episode_id: episodeId, overwrite })

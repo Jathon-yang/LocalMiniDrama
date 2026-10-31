@@ -4,6 +4,13 @@ const os = require('os');
 const { getFfmpegPath, getFfprobePath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
 const storageLayout = require('./storageLayout');
 
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif']);
+
+/** storyboards.local_path 是「主图/视频」混用字段，按扩展名判断是否为图片 */
+function isImagePath(filePath) {
+  return IMAGE_EXTS.has(path.extname(String(filePath || '')).toLowerCase());
+}
+
 function list(db, query) {
   let sql = 'FROM video_merges WHERE deleted_at IS NULL';
   const params = [];
@@ -322,6 +329,86 @@ function normalizeClips(localPaths, infos, log) {
   return { dir, paths };
 }
 
+/**
+ * 把一张图片渲染成按分镜时长展示的静帧视频片段。
+ * 图片分镜没有视频流，直接参与 concat 只会得到 0.04 秒的瞬间，表现为成片里大量片段不足 1 秒。
+ */
+function buildStillClip(imagePath, outputPath, target, log) {
+  const { spawnSync } = require('child_process');
+  const duration = Math.max(0.2, Number(target.duration) || 5);
+  const width = target.width % 2 === 0 ? target.width : target.width + 1;
+  const height = target.height % 2 === 0 ? target.height : target.height + 1;
+  const fps = target.fps || 30;
+  const sampleRate = target.sampleRate || 44100;
+  const vf = [
+    `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
+    'setsar=1',
+    `fps=${fps}`,
+    'format=yuv420p',
+  ].join(',');
+  const args = ['-y', '-loop', '1', '-framerate', String(fps), '-t', String(duration), '-i', imagePath];
+  if (target.hasAudio) {
+    args.push('-f', 'lavfi', '-t', String(duration), '-i', `anullsrc=channel_layout=stereo:sample_rate=${sampleRate}`);
+  }
+  args.push('-vf', vf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-t', String(duration));
+  if (target.hasAudio) {
+    args.push('-c:a', 'aac', '-ar', String(sampleRate), '-ac', '2', '-shortest');
+  } else {
+    args.push('-an');
+  }
+  args.push(outputPath);
+  const res = spawnSync(getFfmpegPath(), args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+  if (res.error || res.status !== 0) {
+    log.warn('Video merge: build still clip failed', {
+      input: imagePath,
+      error: res.error?.message,
+      stderr: res.stderr?.slice(-500),
+    });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 把图片分镜按计划时长渲染成静帧片段，输出参数尽量与视频片段对齐，便于后续直接流拷贝拼接。
+ * @returns {{ dir: string, paths: string[] } | null}
+ */
+function renderStillClips(localPaths, durations, log) {
+  const videoInfos = localPaths.map((p) => (isImagePath(p) ? null : probeVideoInfo(p)));
+  const firstVideo = videoInfos.find(Boolean) || null;
+  const withAudio = videoInfos.find((i) => i && i.hasAudio) || null;
+  const target = {
+    width: firstVideo ? firstVideo.width : 1280,
+    height: firstVideo ? firstVideo.height : 720,
+    fps: (firstVideo && firstVideo.fps) || 30,
+    hasAudio: videoInfos.some((i) => i && i.hasAudio),
+    sampleRate: (withAudio && withAudio.sampleRate) || 44100,
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drama-still-clip-'));
+  const paths = [];
+  for (let i = 0; i < localPaths.length; i++) {
+    if (!isImagePath(localPaths[i])) {
+      paths.push(localPaths[i]);
+      continue;
+    }
+    const out = path.join(dir, `still_${i}.mp4`);
+    if (!buildStillClip(localPaths[i], out, { ...target, duration: durations[i] }, log)) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+      return null;
+    }
+    paths.push(out);
+  }
+  log.info('Video merge: still images rendered as clips', {
+    image_count: localPaths.filter((p) => isImagePath(p)).length,
+    width: target.width,
+    height: target.height,
+    fps: target.fps,
+    audio: target.hasAudio,
+  });
+  return { dir, paths };
+}
+
 /** 使用 ffmpeg concat 合并多个视频文件：参数一致时流拷贝，不一致时先归一化再合并 */
 function runFfmpegConcat(localPaths, outputPath, log) {
   const listFile = path.join(path.dirname(outputPath), `concat_list_${Date.now()}.txt`);
@@ -417,6 +504,7 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
   const localPaths = [];
+  const clipDurations = [];
   const toCleanup = [];
   for (let i = 0; i < scenes.length; i++) {
     const p = await resolveVideoToLocalPath(
@@ -429,6 +517,7 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
     );
     if (p) {
       localPaths.push(p);
+      clipDurations.push(Number(scenes[i].duration) || 5);
       if (p.startsWith(tempDir)) toCleanup.push(p);
     }
   }
@@ -441,6 +530,18 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
     local_video_count: localPaths.length,
     cwd: process.cwd(),
   });
+
+  // 图片分镜（只有主图、还没生成视频）直接 concat 只会得到 0.04 秒的瞬间，
+  // 表现为成片里大量片段不足 1 秒；这里按分镜计划时长把图片渲染成静帧片段。
+  let stillDir = null;
+  if (ffmpegAvailable && localPaths.some((p) => isImagePath(p))) {
+    stillDir = renderStillClips(localPaths, clipDurations, log);
+    if (stillDir) {
+      localPaths.splice(0, localPaths.length, ...stillDir.paths);
+    } else {
+      log.warn('Video merge: falling back to raw image clips (still render failed)', { merge_id: mergeId });
+    }
+  }
 
   let mergedRelativePath = null;
   if (localPaths.length > 0 && ffmpegAvailable && localPaths.length <= 100) {
@@ -493,6 +594,9 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
 
   for (const p of toCleanup) {
     try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {}
+  }
+  if (stillDir) {
+    try { fs.rmSync(stillDir.dir, { recursive: true, force: true }); } catch (_) {}
   }
 
   if (!mergedRelativePath) {

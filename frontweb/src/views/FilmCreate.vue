@@ -850,7 +850,7 @@
           <el-checkbox v-model="storyboardUseFirstLastFrame" @change="onStoryboardUseFirstLastFrameChange">
             首尾帧参考图（经典模式双槽；图生前先走专业帧提示词模块 first/last，再生图；视频绑定 first/last_frame_url）
           </el-checkbox>
-          <el-checkbox v-model="storyboardUniversalOmni" @change="() => saveProjectSettings(false)">
+          <el-checkbox v-model="storyboardUniversalOmni" @change="onStoryboardUniversalOmniChange">
             全能分镜模式（每镜输出多子分镜段落式 universal_segment_text，与「生成/润色全能提示词」同版式）
           </el-checkbox>
           <el-checkbox v-model="storyboardTailFrameChain" @change="() => saveProjectSettings(false)">
@@ -3708,6 +3708,46 @@ async function copySbVideoPrompt(sb) {
   }
 }
 /**
+ * 同幕连戏约束：取同一幕上一镜的 continuity_snapshot，生成与后端注入一致的约束文本。
+ * 复制/发送全能提示词时一并带上，避免外部工具出片时人物服装、站位、光线跳变。
+ */
+function buildPrevContinuityBlockForSb(sb) {
+  if (!sb?.id) return ''
+  const list = store.storyboards || []
+  const idx = list.findIndex((s) => Number(s.id) === Number(sb.id))
+  if (idx <= 0) return ''
+  const prev = list[idx - 1]
+  if (!prev?.continuity_snapshot) return ''
+  if (Number(prev.segment_index ?? 0) !== Number(sb.segment_index ?? 0)) return ''
+  let snap = null
+  try {
+    snap = typeof prev.continuity_snapshot === 'string' ? JSON.parse(prev.continuity_snapshot) : prev.continuity_snapshot
+  } catch (_) {
+    return ''
+  }
+  if (!snap || typeof snap !== 'object') return ''
+  const lines = []
+  const chars = snap.characters && typeof snap.characters === 'object' ? snap.characters : {}
+  for (const [name, st] of Object.entries(chars)) {
+    if (!st || typeof st !== 'object') continue
+    const parts = []
+    if (st.clothing) parts.push(`服装=${st.clothing}`)
+    if (st.screen_position) parts.push(`站位=${st.screen_position}`)
+    if (st.body_posture) parts.push(`姿态=${st.body_posture}`)
+    if (st.expression) parts.push(`表情=${st.expression}`)
+    if (Array.isArray(st.props) && st.props.length) parts.push(`道具=${st.props.join('、')}`)
+    if (parts.length) lines.push(`- ${name}：${parts.join('；')}`)
+  }
+  if (snap.lighting) lines.push(`- 光线=${snap.lighting}`)
+  if (snap.location) lines.push(`- 场景=${snap.location}`)
+  if (!lines.length) return ''
+  return [
+    `【同幕连戏（承接第 ${prev.storyboard_number ?? '?'} 镜，须保持一致）】`,
+    ...lines,
+    '除非本镜动作明确写出换装/起身/走位/转场，否则不得改变上述服装、站位、角色左右关系与光线；首帧承接上一镜尾帧时，动作须从该画面自然延续。',
+  ].join('\n')
+}
+/**
  * 构造全能提示词条目：镜头名（#序号 + 标题）+ 参考图绝对地址（场景→角色→物品，与 @ 编号同序）
  * + 图片映射行（经典模式追加；已是全能模式时片段描述自身已按 @图N 编排，不再追加；全能模式另追加视频比例与时长）与完整视频提示词。图片引用统一为 @图N。复制与发送任务共用。
  */
@@ -3723,6 +3763,7 @@ function buildSbOmniPromptItem(sb) {
         const n = (s.name || '').toString().trim()
         return `${n || `参考图${i + 1}`}: @图${i + 1}`
       })
+  const continuityBlock = buildPrevContinuityBlockForSb(sb)
   const body = String(buildSbVideoPromptForApi(sb) || '')
     .replace(/@图片(\d+)/g, '@图$1')
     .trim()
@@ -3738,7 +3779,7 @@ function buildSbOmniPromptItem(sb) {
   return {
     name: title ? `#${num} ${title}` : `#${num}`,
     images,
-    prompt: [...mapLines, body, ...paramLines].filter((l) => !!l).join(' \n'),
+    prompt: [...mapLines, continuityBlock, body, ...paramLines].filter((l) => !!l).join(' \n'),
   }
 }
 /** 复制全能提示词 JSON */
@@ -3907,6 +3948,15 @@ function onStoryboardUseFirstLastFrameChange() {
     ElMessage.info('首尾帧模式已开启，序列图已切换为单张')
   }
   saveProjectSettings(false)
+}
+
+/** 勾选全能分镜模式：保存项目设置；开启时为已标记为全能但缺少片段描述的分镜立即批量生成 */
+async function onStoryboardUniversalOmniChange() {
+  await saveProjectSettings(false)
+  if (!storyboardUniversalOmni.value) return
+  if (pipelineRunning.value || storyboardGenerating.value || universalOmniPolishRunning.value) return
+  const res = await polishUniversalSegmentsAfterGeneration({ onlyMissing: true })
+  if (res?.generated > 0) ElMessage.success(`已为 ${res.generated} 个分镜生成全能片段描述`)
 }
 
 function uploadingSbImageSlot(sbId) {
@@ -6332,26 +6382,34 @@ async function onPolishUniversalSegmentPromptStream(sb, opts = {}) {
 }
 
 /**
- * 分镜脚本生成完成后：按镜序逐个流式润色全能片段（服务端已落库）。
- * @param {{ checkPause?: () => Promise<void>, onShotProgress?: (cur:number,total:number,sb:object)=>void, onShotError?: (sb:object,msg:string)=>void }} opts
+ * 分镜脚本生成完成后：按镜序逐个流式处理全能片段（服务端已落库）。
+ * - 缺少 universal_segment_text 的分镜：立即生成
+ * - 已有片段描述的分镜：润色
+ * @param {{ onlyMissing?: boolean, checkPause?: () => Promise<void>, onShotProgress?: (cur:number,total:number,sb:object)=>void, onShotError?: (sb:object,msg:string)=>void }} opts
+ *   onlyMissing=true 时只处理缺少片段描述的分镜（用于勾选全能模式后补齐）
  */
 async function polishUniversalSegmentsAfterGeneration(opts = {}) {
   const checkPause = typeof opts.checkPause === 'function' ? opts.checkPause : async () => {}
   const onShotProgress = typeof opts.onShotProgress === 'function' ? opts.onShotProgress : null
   const onShotError = typeof opts.onShotError === 'function' ? opts.onShotError : null
+  const onlyMissing = !!opts.onlyMissing
 
-  if (!storyboardUniversalOmni.value) return { polished: 0, skipped: true }
+  if (!storyboardUniversalOmni.value) return { polished: 0, generated: 0, skipped: true }
 
   const rawList = store.currentEpisode?.storyboards || []
   const list = rawList.slice().sort((a, b) => (Number(a.storyboard_number) || 0) - (Number(b.storyboard_number) || 0))
-  const targets = list.filter((sb) => sb?.id && isSbUniversalMode(sb.id) && sbUniversalSegmentTrimmed(sb))
+  const targets = list.filter((sb) => {
+    if (!sb?.id || !isSbUniversalMode(sb.id)) return false
+    return onlyMissing ? !sbUniversalSegmentTrimmed(sb) : true
+  })
 
-  if (!targets.length) return { polished: 0, skipped: true }
+  if (!targets.length) return { polished: 0, generated: 0, skipped: true }
 
   universalOmniPolishRunning.value = true
   universalOmniPolishAbort.value = false
   universalOmniPolishProgress.value = { current: 0, total: targets.length, label: '' }
   let polished = 0
+  let generated = 0
   try {
     for (let i = 0; i < targets.length; i++) {
       if (universalOmniPolishAbort.value) break
@@ -6363,28 +6421,40 @@ async function polishUniversalSegmentsAfterGeneration(opts = {}) {
       if (onShotProgress) onShotProgress(cur, targets.length, sb)
 
       const draft = sbUniversalSegmentTrimmed(sb)
-      if (!draft) continue
 
       generatingUniversalSegmentIds.add(sb.id)
       let live = ''
       try {
         const durationSec = universalSegmentDurationSecForSb(sb)
-        const data = await storyboardsAPI.polishUniversalSegmentPromptStream(
-          sb.id,
-          {
-            duration: durationSec,
-            draft_universal_segment_text: draft,
-            field_overrides: buildUniversalSegmentFieldOverrides(sb),
-            force_without_reference_images: true,
-          },
-          (delta) => {
-            live += delta
-            sbUniversalSegmentText.value = { ...sbUniversalSegmentText.value, [sb.id]: live }
-          }
-        )
+        const onDelta = (delta) => {
+          live += delta
+          sbUniversalSegmentText.value = { ...sbUniversalSegmentText.value, [sb.id]: live }
+        }
+        // 缺片段描述：先按分镜结构化字段生成；已有描述：结合剧本与邻镜润色
+        const data = draft
+          ? await storyboardsAPI.polishUniversalSegmentPromptStream(
+              sb.id,
+              {
+                duration: durationSec,
+                draft_universal_segment_text: draft,
+                field_overrides: buildUniversalSegmentFieldOverrides(sb),
+                force_without_reference_images: true,
+              },
+              onDelta
+            )
+          : await storyboardsAPI.generateUniversalSegmentPromptStream(
+              sb.id,
+              {
+                duration: durationSec,
+                field_overrides: buildUniversalSegmentFieldOverrides(sb),
+                force_without_reference_images: true,
+              },
+              onDelta
+            )
         const text = (data?.universal_segment_text ?? '').toString().trim()
         if (text) {
-          polished += 1
+          if (draft) polished += 1
+          else generated += 1
           sbUniversalSegmentText.value = { ...sbUniversalSegmentText.value, [sb.id]: text }
           const storyList = store.currentEpisode?.storyboards
           if (Array.isArray(storyList)) {
@@ -6395,7 +6465,7 @@ async function polishUniversalSegmentsAfterGeneration(opts = {}) {
       } catch (e) {
         const msg = e?.message || String(e)
         if (onShotError) onShotError(sb, msg)
-        else ElMessage.warning(`分镜 #${sb.storyboard_number ?? sb.id} 全能润色失败：${msg}`)
+        else ElMessage.warning(`分镜 #${sb.storyboard_number ?? sb.id} 全能片段处理失败：${msg}`)
       } finally {
         generatingUniversalSegmentIds.delete(sb.id)
       }
@@ -6405,7 +6475,7 @@ async function polishUniversalSegmentsAfterGeneration(opts = {}) {
     universalOmniPolishRunning.value = false
     universalOmniPolishProgress.value = { current: 0, total: 0, label: '' }
   }
-  return { polished, skipped: false }
+  return { polished, generated, skipped: false }
 }
 
 /** 为视频生成获取参考图的真实 URL */
@@ -7023,9 +7093,22 @@ async function onLinkTailFrameToNext(sb) {
       throw new Error(data.error)
     }
     ElMessage.success(`已将尾帧设为 #${nextSb.storyboard_number ?? nextSb.id} 的首帧`)
-    // 刷新两个分镜的媒体
+    // 乐观更新下一个分镜的首帧绑定（getSbFirstImage 以 first_frame_image_id 为最高权威）
+    const list = store.currentEpisode?.storyboards
+    if (Array.isArray(list)) {
+      const row = list.find((x) => Number(x.id) === Number(nextSb.id))
+      if (row) {
+        row.first_frame_image_id = data.new_first_frame_image_id ?? null
+        row.image_url = data.image_url ?? null
+        row.local_path = data.local_path ?? null
+      }
+    }
+    if (data.new_first_frame_image_id != null) {
+      sbSelectedImgId.value = { ...sbSelectedImgId.value, [nextSb.id]: data.new_first_frame_image_id }
+    }
+    // 刷新分镜元数据 + 媒体列表，避免需要手动刷新页面才能看到新首帧
     await Promise.all([
-      loadSingleStoryboardMedia(sb.id),
+      refreshStoryboardsOnly(),
       loadSingleStoryboardMedia(nextSb.id)
     ])
   } catch (e) {
@@ -7136,10 +7219,11 @@ async function onGenerateStoryboard() {
     storyboardsAPI.batchInferParams(epId, false).catch(() => {})
     const polishRes = await polishUniversalSegmentsAfterGeneration({})
     const polishedN = polishRes?.polished ?? 0
+    const generatedN = polishRes?.generated ?? 0
     ElMessage.success(
       storyboardUniversalOmni.value
-        ? polishedN > 0
-          ? `全能分镜生成完成，已自动润色 ${polishedN} 条片段`
+        ? polishedN > 0 || generatedN > 0
+          ? `全能分镜生成完成，已自动补全 ${generatedN} 条、润色 ${polishedN} 条片段`
           : '全能分镜生成完成'
         : '分镜生成完成'
     )
@@ -7170,6 +7254,7 @@ async function onAddSingleStoryboard(){
       storyboard_number: maxNum + 1,
       title: `镜头 ${maxNum + 1}`,
       description: '',
+      creation_mode: storyboardUniversalOmni.value ? 'universal' : 'classic',
     })
     ElMessage.success('添加成功')
     await loadDrama() // 刷新列表
@@ -7197,7 +7282,9 @@ async function onDeleteSingleStoryboard(id){
 
 async function onInsertStoryboardBefore(sb) {
   try {
-    await storyboardsAPI.insertBefore(sb.id)
+    await storyboardsAPI.insertBefore(sb.id, {
+      creation_mode: storyboardUniversalOmni.value ? 'universal' : 'classic',
+    })
     ElMessage.success('已在此位置前新增空白分镜')
     await loadDrama()
   } catch (e) {

@@ -135,18 +135,25 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
   } catch (_) {}
 
   const charNamesOrdered = [];
+  const charAppearances = [];
   const nameSeen = new Set();
   for (const ent of charOrderEntries) {
     let row = null;
     if (ent.key.startsWith('drama:')) {
-      row = db.prepare('SELECT name FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(ent.key.slice(6)));
+      row = db.prepare('SELECT name, appearance FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(ent.key.slice(6)));
     } else if (ent.key.startsWith('lib:')) {
-      row = db.prepare('SELECT name FROM character_libraries WHERE id = ? AND deleted_at IS NULL').get(Number(ent.key.slice(4)));
+      row = db
+        .prepare('SELECT name, description AS appearance FROM character_libraries WHERE id = ? AND deleted_at IS NULL')
+        .get(Number(ent.key.slice(4)));
     }
     const nm = (row?.name || ent.nameHint || '').trim();
     if (nm && !nameSeen.has(nm)) {
       nameSeen.add(nm);
       charNamesOrdered.push(nm);
+      const ap = String(row?.appearance || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (ap) charAppearances.push({ name: nm, appearance: ap.slice(0, 300) });
     }
   }
   const charNames = charNamesOrdered.join(', ');
@@ -410,7 +417,22 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
     `预定参考图槽位数: ${plannedSlots.length}；已上传参考图槽位数: ${slots.length}；绑定角色数(含无图): ${charCount}；绑定道具数(含无图): ${propCount}`,
   ].join('\n');
 
-  const assetLine = `ORDERED_CHARACTER_NAMES（仅剧情理解）: ${charNames || 'none'}\nORDERED_PROP_NAMES: ${propNames.join(', ') || 'none'}`;
+  // 本镜有角色时：给出各角色外形（含身高体重），供模型在子分镜里写出具体体型数值，避免「面包车大小」这类模糊表述
+  const charAppearanceBlock =
+    charAppearances.length > 0
+      ? [
+          'CHARACTER_APPEARANCE（角色首次出场须写明具体体型数值：人类写身高X米、体重XXkg；动物/非人写体长/肩高X米、体重XXkg；下列外形已给出数值时须照用，未给出时按年龄/物种/体型合理设定，禁止用「面包车大小」「巨型」等模糊表述代替数值）:',
+          ...charAppearances.map((c) => `- ${c.name}：${c.appearance}`),
+        ].join('\n')
+      : '';
+
+  const assetLine = [
+    `ORDERED_CHARACTER_NAMES（仅剧情理解）: ${charNames || 'none'}`,
+    `ORDERED_PROP_NAMES: ${propNames.join(', ') || 'none'}`,
+    charAppearanceBlock,
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   if (lines.length === 0 && !sceneBlock && !charNames && !propNames.length) {
     return { ok: false, code: 'bad_request', message: '分镜中暂无可用信息，请先填写动作、对白、视频提示词或绑定场景/角色等' };

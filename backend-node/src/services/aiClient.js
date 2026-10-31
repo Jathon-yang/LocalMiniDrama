@@ -583,6 +583,7 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, b, silenceMs, onProgress);
   let res;
   try {
+    log.info('AI streamGenerateText body', body);
     res = await send(body);
   } catch (e) {
     // max_tokens 超厂商上限（如火山方舟 12288）：按上限或去掉该参数重试一次

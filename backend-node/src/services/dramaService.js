@@ -16,6 +16,14 @@ function sanitizeImageUrl(url) {
   return url;
 }
 
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif']);
+
+/** storyboards.local_path 混用了「主图」和「视频」（如尾帧衔接会把 jpg 写进去），按扩展名判断是否为图片 */
+function isImagePath(filePath) {
+  const clean = String(filePath || '').split(/[?#]/)[0];
+  return IMAGE_EXTS.has(path.extname(clean).toLowerCase());
+}
+
 /** 获取 storage 根目录（绝对路径），与 videoMergeService 保持一致 */
 function getStorageRootPath() {
   const cfg = require('../config').loadConfig();
@@ -774,8 +782,10 @@ function getVideoUrlForStoryboard(db, storyboardId, baseUrl) {
   const buildUrl = (videoUrl, localPath) => {
     // 本地文件存在时直接返回 storage 相对路径：合成时无需走 localhost/网络，也不受 base_url 配置影响
     const lp = localPath && String(localPath).trim();
-    if (lp && localAbsExists(lp)) return String(lp).replace(/\\/g, '/').replace(/^\//, '');
-    if (videoUrl && String(videoUrl).trim()) return videoUrl;
+    // 图片不能当作视频：storyboards.local_path 可能被尾帧衔接/主图覆盖成 jpg，
+    // 若把它当视频返回，会导致 video_generations 里已生成的真实视频被忽略，成片变成静帧。
+    if (lp && !isImagePath(lp) && localAbsExists(lp)) return String(lp).replace(/\\/g, '/').replace(/^\//, '');
+    if (videoUrl && String(videoUrl).trim() && !isImagePath(videoUrl)) return videoUrl;
     return null;
   };
 

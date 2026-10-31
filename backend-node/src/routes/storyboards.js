@@ -250,7 +250,7 @@ function routes(db, log) {
     },
     insertBefore: (req, res) => {
       try {
-        const sb = storyboardService.insertBeforeStoryboard(db, log, req.params.id);
+        const sb = storyboardService.insertBeforeStoryboard(db, log, req.params.id, req.body || {});
         if (!sb) return response.notFound(res, '目标分镜不存在');
         response.created(res, sb);
       } catch (err) {

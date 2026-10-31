@@ -467,6 +467,52 @@ function resumeProcessingVideoGenerations(db, log) {
   }
 }
 
+/**
+ * 同一幕内的视频连戏约束：把上一镜的 continuity_snapshot 拼到视频提示词前面，
+ * 避免同幕镜头之间服装/站位/光线跳变。跨幕不注入（不同幕允许场景切换）。
+ */
+function buildPrevContinuityBlock(db, storyboardId) {
+  if (!storyboardId) return '';
+  const sb = db.prepare(
+    'SELECT episode_id, storyboard_number, segment_index FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+  ).get(Number(storyboardId));
+  if (!sb || sb.episode_id == null || sb.storyboard_number == null) return '';
+  const prev = db.prepare(
+    `SELECT storyboard_number, continuity_snapshot FROM storyboards
+      WHERE episode_id = ? AND storyboard_number < ? AND deleted_at IS NULL
+        AND IFNULL(segment_index, 0) = IFNULL(?, 0)
+      ORDER BY storyboard_number DESC LIMIT 1`
+  ).get(sb.episode_id, sb.storyboard_number, sb.segment_index);
+  if (!prev || !prev.continuity_snapshot) return '';
+  let snap;
+  try {
+    snap = JSON.parse(prev.continuity_snapshot);
+  } catch (_) {
+    return '';
+  }
+  if (!snap || typeof snap !== 'object') return '';
+  const lines = [];
+  const chars = snap.characters && typeof snap.characters === 'object' ? snap.characters : {};
+  for (const [name, st] of Object.entries(chars)) {
+    if (!st || typeof st !== 'object') continue;
+    const parts = [];
+    if (st.clothing) parts.push(`服装=${st.clothing}`);
+    if (st.screen_position) parts.push(`站位=${st.screen_position}`);
+    if (st.body_posture) parts.push(`姿态=${st.body_posture}`);
+    if (st.expression) parts.push(`表情=${st.expression}`);
+    if (Array.isArray(st.props) && st.props.length) parts.push(`道具=${st.props.join('、')}`);
+    if (parts.length) lines.push(`- ${name}：${parts.join('；')}`);
+  }
+  if (snap.lighting) lines.push(`- 光线=${snap.lighting}`);
+  if (snap.location) lines.push(`- 场景=${snap.location}`);
+  if (!lines.length) return '';
+  return [
+    `【同幕连戏（承接第 ${prev.storyboard_number} 镜，须保持一致）】`,
+    ...lines,
+    '除非本镜动作明确写出换装/起身/走位/转场，否则不得改变上述服装、站位、角色左右关系与光线；首帧承接上一镜尾帧时，动作须从该画面自然延续。',
+  ].join('\n');
+}
+
 async function processVideoGeneration(db, log, videoGenId) {
   if (activeVideoPolls.has(videoGenId)) {
     log.info('Video generation already in progress, skip duplicate', { videoGenId });
@@ -529,6 +575,17 @@ async function processVideoGeneration(db, log, videoGenId) {
       } catch (_) {}
     }
     const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
+    // 同幕连戏：把上一镜的服装/站位/光线状态前置到视频提示词，避免同幕内跳变
+    const continuityBlock = buildPrevContinuityBlock(db, row.storyboard_id);
+    const basePrompt = String(row.prompt || '').trim();
+    const finalPrompt = continuityBlock ? (basePrompt ? `${continuityBlock}\n\n${basePrompt}` : continuityBlock) : row.prompt;
+    if (continuityBlock) {
+      log.info('视频提示词已注入同幕连戏约束', {
+        video_gen_id: videoGenId,
+        storyboard_id: row.storyboard_id,
+        block_chars: continuityBlock.length,
+      });
+    }
     const hasOmniRefs = !!(reference_urls && reference_urls.length > 0);
     if (row.task_id && hasOmniRefs) {
       taskService.updateTaskStatus(
@@ -540,7 +597,7 @@ async function processVideoGeneration(db, log, videoGenId) {
       );
     }
     const result = await videoClient.callVideoApi(db, log, {
-      prompt: row.prompt,
+      prompt: finalPrompt,
       model: row.model,
       duration: effectiveDuration,
       aspect_ratio: rowForAspect.aspect_ratio,
@@ -610,4 +667,5 @@ module.exports = {
   resumeProcessingVideoGenerations,
   resumeFailedVideoPoll,
   resumePollForVideoGeneration,
+  buildPrevContinuityBlock,
 };

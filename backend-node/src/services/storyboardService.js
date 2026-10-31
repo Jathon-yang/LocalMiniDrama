@@ -59,9 +59,10 @@ function createStoryboard(db, log, req) {
   const now = new Date().toISOString();
   const episodeId = Number(req.episode_id);
   const num = Number(req.storyboard_number ?? 0) || 0;
+  const creationMode = req.creation_mode === 'universal' ? 'universal' : 'classic';
   const info = db.prepare(
-    `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+    `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, creation_mode, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
   ).run(
     episodeId,
     req.scene_id ?? null,
@@ -77,6 +78,7 @@ function createStoryboard(db, log, req) {
     req.atmosphere ?? null,
     req.image_prompt ?? null,
     req.video_prompt ?? null,
+    creationMode,
     now,
     now
   );
@@ -240,7 +242,7 @@ function saveFramePrompt(db, log, storyboardId, frameType, prompt, description, 
 }
 
 /** 在指定分镜前插入一个空白分镜：先把同 episode 中 number >= target 的全部 +1，再创建新分镜 */
-function insertBeforeStoryboard(db, log, targetId) {
+function insertBeforeStoryboard(db, log, targetId, opts = {}) {
   const target = db.prepare(
     'SELECT id, episode_id, storyboard_number, segment_index, segment_title FROM storyboards WHERE id = ? AND deleted_at IS NULL'
   ).get(Number(targetId));
@@ -251,10 +253,11 @@ function insertBeforeStoryboard(db, log, targetId) {
   ).run(new Date().toISOString(), target.episode_id, target.storyboard_number);
 
   const now = new Date().toISOString();
+  const creationMode = opts.creation_mode === 'universal' ? 'universal' : 'classic';
   const info = db.prepare(
-    `INSERT INTO storyboards (episode_id, storyboard_number, segment_index, segment_title, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'pending', ?, ?)`
-  ).run(target.episode_id, target.storyboard_number, target.segment_index ?? null, target.segment_title ?? null, now, now);
+    `INSERT INTO storyboards (episode_id, storyboard_number, segment_index, segment_title, creation_mode, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`
+  ).run(target.episode_id, target.storyboard_number, target.segment_index ?? null, target.segment_title ?? null, creationMode, now, now);
 
   log.info('Storyboard inserted before', { new_id: info.lastInsertRowid, before_id: targetId });
   return getStoryboardById(db, info.lastInsertRowid);
